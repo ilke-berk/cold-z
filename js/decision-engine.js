@@ -32,14 +32,19 @@ const DecisionEngine = {
         if (analysisResult.metadata) {
             const meta = analysisResult.metadata;
 
-            // Mükerrer cihaz kullanımı simülasyonu (Demo senaryosu için eğer seri no 'A1234' vb bilindikse alarm ver)
-            if (meta.deviceSerial) {
-                // Burada normalde DB'den check edilir, şimdilik bilinen bir şüpheli örnekte test edilebilir.
-                if (meta.deviceSerial.includes('COPY') || meta.deviceSerial.includes('MANUAL')) {
-                    decision = 'reject';
-                    reasons.unshift(`🚨 ANTI-FRAUD: "${meta.deviceSerial}" seri numaralı cihaz daha önce başka bir eczane iadesinde sisteme yüklenmiş! Mükerrer rapor şüphesi.`);
-                    confidence -= 80;
-                }
+            // Mükerrer cihaz kontrolü: DB'den gelen dedupResult'a göre
+            // (backend /api/device-serial/check). Aynı seri, farklı dosya
+            // hash'i ile daha önce görülmüşse mükerrer rapor şüphesi.
+            if (meta.deviceSerial && meta.dedupResult?.isDuplicate) {
+                decision = 'reject';
+                const prev = meta.dedupResult.previousOccurrences?.[0];
+                const ctx = prev
+                    ? (prev.pharmacy
+                        ? `"${prev.pharmacy}" eczanesinde ${new Date(prev.created_at).toLocaleDateString('tr-TR')} tarihinde`
+                        : `${new Date(prev.created_at).toLocaleDateString('tr-TR')} tarihinde`)
+                    : 'daha önce';
+                reasons.unshift(`🚨 ANTI-FRAUD: "${meta.deviceSerial}" seri numaralı cihaz ${ctx} sisteme yüklenmiş! Mükerrer rapor şüphesi.`);
+                confidence -= 80;
             }
 
             // PDF oluşturulma tarihi vs İçindeki son veri (Zaman yolculuğu kontrolü)

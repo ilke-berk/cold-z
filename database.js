@@ -43,6 +43,25 @@ function initDB() {
             else console.log('[OK] analyses tablosu hazir.');
         });
 
+        // Cihaz seri numarasi takibi: ayni seri farkli dosya hash'i ile gelirse
+        // mukerrer rapor supheli sayilir. Anti-fraud icin kullanilir.
+        db.run(`
+            CREATE TABLE IF NOT EXISTS device_serials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                serial TEXT NOT NULL,
+                pharmacy TEXT,
+                file_hash TEXT NOT NULL,
+                analysis_id INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `, (err) => {
+            if (err) console.error('[HATA] device_serials tablo olusturma hatasi:', err.message);
+            else {
+                console.log('[OK] device_serials tablosu hazir.');
+                db.run(`CREATE INDEX IF NOT EXISTS idx_device_serials_serial ON device_serials(serial)`);
+            }
+        });
+
         // Audit trail: zaman damgali, hash chain ile baglanmis log kayitlari.
         // prev_hash sayesinde bir kaydi degistirmek tum sonraki hash'leri bozar.
         db.run(`
@@ -220,6 +239,56 @@ function verifyAuditChain() {
     });
 }
 
+// ─── DEVICE SERIAL DEDUP ────────────────────────────────────
+/**
+ * Bir cihaz seri numarasini kontrol et: bu seri daha once FARKLI bir dosya
+ * hash'i ile sisteme yuklenmis mi? Eger evet -> mukerrer/supheli.
+ * Ayni dosyanin tekrar yuklenmesi (ayni file_hash) mukerrer sayilmaz.
+ */
+function checkDeviceSerial(serial, fileHash) {
+    return new Promise((resolve, reject) => {
+        if (!serial) {
+            return resolve({ isDuplicate: false, previousOccurrences: [] });
+        }
+        db.all(
+            `SELECT id, pharmacy, file_hash, analysis_id, created_at
+             FROM device_serials
+             WHERE serial = ? AND file_hash != ?
+             ORDER BY created_at ASC`,
+            [serial, fileHash || ''],
+            (err, rows) => {
+                if (err) reject(err);
+                else resolve({
+                    isDuplicate: rows.length > 0,
+                    previousOccurrences: rows
+                });
+            }
+        );
+    });
+}
+
+/**
+ * Yeni bir cihaz seri kaydi olustur. Her analizde cagrilir; ayni seri+hash
+ * birden fazla yazilabilir (idempotent degil) ama mukerrer kontrolu file_hash
+ * uzerinden yapildigi icin sorun yok.
+ */
+function recordDeviceSerial({ serial, pharmacy, fileHash, analysisId }) {
+    return new Promise((resolve, reject) => {
+        if (!serial || !fileHash) {
+            return reject(new Error('serial ve fileHash zorunlu'));
+        }
+        db.run(
+            `INSERT INTO device_serials (serial, pharmacy, file_hash, analysis_id)
+             VALUES (?, ?, ?, ?)`,
+            [serial, pharmacy || '', fileHash, analysisId || null],
+            function (err) {
+                if (err) reject(err);
+                else resolve({ id: this.lastID });
+            }
+        );
+    });
+}
+
 module.exports = {
     initDB,
     saveAnalysis,
@@ -227,5 +296,7 @@ module.exports = {
     getStats,
     addAuditEntry,
     getAuditLog,
-    verifyAuditChain
+    verifyAuditChain,
+    checkDeviceSerial,
+    recordDeviceSerial
 };

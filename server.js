@@ -795,6 +795,37 @@ app.get('/api/audit/verify', async (req, res) => {
     }
 });
 
+// ─── DEVICE SERIAL DEDUP API ────────────────────────────────
+
+app.get('/api/device-serial/check', async (req, res) => {
+    try {
+        const serial = req.query.serial;
+        const fileHash = req.query.fileHash || '';
+        if (!serial) {
+            return res.status(400).json({ success: false, error: 'serial zorunlu.' });
+        }
+        const result = await db.checkDeviceSerial(serial, fileHash);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[HATA] Device serial check hatasi:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/device-serial', async (req, res) => {
+    try {
+        const { serial, pharmacy, fileHash, analysisId } = req.body || {};
+        if (!serial || !fileHash) {
+            return res.status(400).json({ success: false, error: 'serial ve fileHash zorunlu.' });
+        }
+        const result = await db.recordDeviceSerial({ serial, pharmacy, fileHash, analysisId });
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error('[HATA] Device serial kayit hatasi:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // ─── SUNUCUYU BAŞLAT ────────────────────────────────────────
 
 const geminiReady = initGemini();

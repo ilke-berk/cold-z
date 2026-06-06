@@ -75,27 +75,59 @@ describe('DecisionEngine — Anti-Fraud (sentetik veri tespiti)', () => {
     });
 });
 
-describe('DecisionEngine — Mükerrer cihaz (COPY/MANUAL)', () => {
-    test('COPY içeren seri → reject', () => {
+describe('DecisionEngine — Mükerrer cihaz (DB dedupResult)', () => {
+    test('isDuplicate=true → reject + reason', () => {
         const r = DecisionEngine.evaluate(baseAnalysis({
-            metadata: { deviceSerial: 'X-COPY-001' }
+            metadata: {
+                deviceSerial: 'SN-9000',
+                dedupResult: {
+                    isDuplicate: true,
+                    previousOccurrences: [{
+                        pharmacy: 'X Eczanesi',
+                        file_hash: 'abc...',
+                        created_at: '2025-05-01T10:00:00Z'
+                    }]
+                }
+            }
         }));
         assert.equal(r.decision, 'reject');
         assert.ok(r.reasons.some(x => /Mükerrer|ANTI-FRAUD/i.test(x)));
+        assert.ok(r.reasons.some(x => /X Eczanesi/.test(x)), 'önceki eczane reason\'da geçmeli');
     });
 
-    test('MANUAL içeren seri → reject', () => {
+    test('isDuplicate=false → accept', () => {
         const r = DecisionEngine.evaluate(baseAnalysis({
-            metadata: { deviceSerial: 'DEV-MANUAL-9' }
-        }));
-        assert.equal(r.decision, 'reject');
-    });
-
-    test('normal seri numarası → accept', () => {
-        const r = DecisionEngine.evaluate(baseAnalysis({
-            metadata: { deviceSerial: 'SN12345' }
+            metadata: {
+                deviceSerial: 'SN-9000',
+                dedupResult: { isDuplicate: false, previousOccurrences: [] }
+            }
         }));
         assert.equal(r.decision, 'accept');
+    });
+
+    test('dedupResult yoksa (offline / eski kayıt) → accept (fail-open)', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            metadata: { deviceSerial: 'SN-9000' }
+        }));
+        assert.equal(r.decision, 'accept');
+    });
+
+    test('eski COPY/MANUAL string match artık etkili değil', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            metadata: { deviceSerial: 'X-COPY-001' }
+        }));
+        assert.equal(r.decision, 'accept');
+    });
+
+    test('previousOccurrences boş ama isDuplicate=true → genel mesaj', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            metadata: {
+                deviceSerial: 'SN-1',
+                dedupResult: { isDuplicate: true, previousOccurrences: [] }
+            }
+        }));
+        assert.equal(r.decision, 'reject');
+        assert.ok(r.reasons.some(x => /daha önce/i.test(x)));
     });
 });
 
@@ -191,12 +223,15 @@ describe('DecisionEngine — gap / kayıt sıklığı', () => {
 
 describe('DecisionEngine — confidence taban', () => {
     test('confidence en az 40 olmalı', () => {
-        // Tüm cezalar toplansın: reject + anti-fraud + manipülasyon
+        // Tüm cezalar toplansın: reject + anti-fraud + mukerrer
         const r = DecisionEngine.evaluate(baseAnalysis({
             compliance: { status: 'fail', redReasons: ['x'], conditionalReasons: [], checks: [] },
             mkt: { stdDev: 0.05, mkt: 5 },
             dataPoints: 500,
-            metadata: { deviceSerial: 'A-COPY-1' }
+            metadata: {
+                deviceSerial: 'SN-1',
+                dedupResult: { isDuplicate: true, previousOccurrences: [] }
+            }
         }));
         assert.ok(r.confidence >= 40, `confidence=${r.confidence}`);
     });

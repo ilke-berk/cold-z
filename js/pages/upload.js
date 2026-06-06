@@ -428,7 +428,46 @@ const UploadPage = {
                 analysis.metadata = successFiles[0].parsedResult.metadata;
             }
 
+            // Dedup için birincil dosyanın SHA-256 hash'ini hesapla ve backend'e
+            // sorarak aynı cihaz seri no'sunun farklı bir dosya ile daha önce
+            // yüklenip yüklenmediğini öğren. Hata olursa accept ile devam et
+            // (offline / backend yok ise blocker olmasın).
+            const deviceSerial = analysis.metadata?.deviceSerial;
+            let primaryFileHash = null;
+            if (deviceSerial && successFiles[0]?.file) {
+                try {
+                    const buf = await successFiles[0].file.arrayBuffer();
+                    primaryFileHash = await Utils.sha256OfBytes(buf);
+                    const resp = await fetch(
+                        `/api/device-serial/check?serial=${encodeURIComponent(deviceSerial)}&fileHash=${primaryFileHash}`
+                    );
+                    const json = await resp.json();
+                    if (json.success) {
+                        analysis.metadata.dedupResult = {
+                            isDuplicate: json.isDuplicate,
+                            previousOccurrences: json.previousOccurrences || []
+                        };
+                    }
+                } catch (e) {
+                    console.warn('Device serial dedup kontrolü başarısız:', e.message);
+                }
+            }
+
             const decision = DecisionEngine.evaluate(analysis);
+
+            // Kararı bekleme, her analizde kaydet (mukerrer tespit için iz)
+            if (deviceSerial && primaryFileHash) {
+                fetch('/api/device-serial', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        serial: deviceSerial,
+                        pharmacy: document.getElementById('pharmacy-name')?.value || '',
+                        fileHash: primaryFileHash,
+                        analysisId: null
+                    })
+                }).catch(e => console.warn('Device serial kayıt başarısız:', e.message));
+            }
 
             AppState.currentAnalysis = {
                 ...analysis, decision,

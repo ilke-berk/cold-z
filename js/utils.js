@@ -151,6 +151,17 @@ const Utils = {
     },
 
     /**
+     * ArrayBuffer/Uint8Array veri uzerinde gercek SHA-256 hash.
+     * Dosya icerik fingerprint'i icin (deduplication).
+     * @returns {Promise<string>} 64 karakterli hex hash
+     */
+    async sha256OfBytes(buffer) {
+        const buf = await crypto.subtle.digest('SHA-256', buffer);
+        const bytes = Array.from(new Uint8Array(buf));
+        return bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+    },
+
+    /**
      * Show toast notification
      */
     showToast(message, type = 'info', duration = 4000) {
