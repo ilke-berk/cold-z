@@ -1,0 +1,179 @@
+/* ========================================
+   ColdChain AI — Design Token System
+   ======================================== */
+
+:root {
+   color-scheme: dark;
+   /* === Color Palette === */
+   /* Primary - Cyan/Teal */
+   --color-primary-50: #ecfeff;
+   --color-primary-100: #cffafe;
+   --color-primary-200: #a5f3fc;
+   --color-primary-300: #67e8f9;
+   --color-primary-400: #22d3ee;
+   --color-primary-500: #06b6d4;
+   --color-primary-600: #0891b2;
+   --color-primary-700: #0e7490;
+   --color-primary-800: #155e75;
+   --color-primary-900: #164e63;
+
+   /* Accent - Violet */
+   --color-accent-50: #f5f3ff;
+   --color-accent-100: #ede9fe;
+   --color-accent-200: #ddd6fe;
+   --color-accent-300: #c4b5fd;
+   --color-accent-400: #a78bfa;
+   --color-accent-500: #8b5cf6;
+   --color-accent-600: #7c3aed;
+   --color-accent-700: #6d28d9;
+   --color-accent-800: #5b21b6;
+   --color-accent-900: #4c1d95;
+
+   /* Success - Emerald */
+   --color-success-50: #ecfdf5;
+   --color-success-100: #d1fae5;
+   --color-success-400: #34d399;
+   --color-success-500: #10b981;
+   --color-success-600: #059669;
+   --color-success-700: #047857;
+
+   /* Warning - Amber */
+   --color-warning-50: #fffbeb;
+   --color-warning-100: #fef3c7;
+   --color-warning-400: #fbbf24;
+   --color-warning-500: #f59e0b;
+   --color-warning-600: #d97706;
+   --color-warning-700: #b45309;
+
+   /* Danger - Rose */
+   --color-danger-50: #fff1f2;
+   --color-danger-100: #ffe4e6;
+   --color-danger-400: #fb7185;
+   --color-danger-500: #f43f5e;
+   --color-danger-600: #e11d48;
+   --color-danger-700: #be123c;
+
+   /* Neutral - Slate */
+   --color-neutral-50: #f8fafc;
+   --color-neutral-100: #f1f5f9;
+   --color-neutral-200: #e2e8f0;
+   --color-neutral-300: #cbd5e1;
+   --color-neutral-400: #94a3b8;
+   --color-neutral-500: #64748b;
+   --color-neutral-600: #475569;
+   --color-neutral-700: #334155;
+   --color-neutral-800: #1e293b;
+   --color-neutral-900: #0f172a;
+   --color-neutral-950: #020617;
+
+   /* === Surface Colors (Dark Mode) === */
+   --surface-bg: #0a0e1a;
+   --surface-0: #0f1629;
+   --surface-1: #141b33;
+   --surface-2: #1a2340;
+   --surface-3: #1f2b4d;
+   --surface-4: #253359;
+   --surface-hover: #2a3a66;
+   --surface-border: rgba(148, 163, 184, 0.08);
+   --surface-border-hover: rgba(148, 163, 184, 0.16);
+
+   /* === Glass Effects === */
+   --glass-bg: rgba(15, 22, 41, 0.8);
+   --glass-border: rgba(148, 163, 184, 0.1);
+   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+   --glass-blur: blur(20px);
+
+   /* === Text Colors === */
+   --text-primary: #f1f5f9;
+   --text-secondary: #94a3b8;
+   --text-tertiary: #64748b;
+   --text-muted: #475569;
+   --text-inverse: #0f172a;
+
+   /* === Typography === */
+   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+   --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+
+   --text-xs: 0.75rem;
+   --text-sm: 0.875rem;
+   --text-base: 1rem;
+   --text-lg: 1.125rem;
+   --text-xl: 1.25rem;
+   --text-2xl: 1.5rem;
+   --text-3xl: 1.875rem;
+   --text-4xl: 2.25rem;
+   --text-5xl: 3rem;
+
+   --font-light: 300;
+   --font-regular: 400;
+   --font-medium: 500;
+   --font-semibold: 600;
+   --font-bold: 700;
+   --font-extrabold: 800;
+
+   --leading-tight: 1.25;
+   --leading-normal: 1.5;
+   --leading-relaxed: 1.75;
+
+   /* === Spacing === */
+   --space-1: 0.25rem;
+   --space-2: 0.5rem;
+   --space-3: 0.75rem;
+   --space-4: 1rem;
+   --space-5: 1.25rem;
+   --space-6: 1.5rem;
+   --space-8: 2rem;
+   --space-10: 2.5rem;
+   --space-12: 3rem;
+   --space-16: 4rem;
+   --space-20: 5rem;
+
+   /* === Border Radius === */
+   --radius-sm: 0.375rem;
+   --radius-md: 0.5rem;
+   --radius-lg: 0.75rem;
+   --radius-xl: 1rem;
+   --radius-2xl: 1.5rem;
+   --radius-full: 9999px;
+
+   /* === Shadows === */
+   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
+   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+   --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+   --shadow-glow-primary: 0 0 20px rgba(6, 182, 212, 0.15), 0 0 60px rgba(6, 182, 212, 0.05);
+   --shadow-glow-accent: 0 0 20px rgba(139, 92, 246, 0.15), 0 0 60px rgba(139, 92, 246, 0.05);
+   --shadow-glow-success: 0 0 20px rgba(16, 185, 129, 0.15);
+   --shadow-glow-danger: 0 0 20px rgba(244, 63, 94, 0.15);
+
+   /* === Transitions === */
+   --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+   --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+   --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+   --transition-spring: 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
+
+   /* === Z-Index === */
+   --z-dropdown: 100;
+   --z-sticky: 200;
+   --z-overlay: 300;
+   --z-modal: 400;
+   --z-toast: 500;
+   --z-loading: 600;
+
+   /* === Layout === */
+   --sidebar-width: 280px;
+   --sidebar-collapsed: 72px;
+   --topbar-height: 64px;
+
+   /* === Gradients === */
+   --gradient-primary: linear-gradient(135deg, #06b6d4, #8b5cf6);
+   --gradient-primary-soft: linear-gradient(135deg, rgba(6, 182, 212, 0.1), rgba(139, 92, 246, 0.1));
+   --gradient-success: linear-gradient(135deg, #10b981, #06b6d4);
+   --gradient-danger: linear-gradient(135deg, #f43f5e, #f59e0b);
+   --gradient-warning: linear-gradient(135deg, #f59e0b, #f43f5e);
+   --gradient-surface: linear-gradient(180deg, var(--surface-1), var(--surface-0));
+   --gradient-mesh: radial-gradient(at 40% 20%, rgba(6, 182, 212, 0.08) 0px, transparent 50%),
+      radial-gradient(at 80% 0%, rgba(139, 92, 246, 0.06) 0px, transparent 50%),
+      radial-gradient(at 0% 50%, rgba(6, 182, 212, 0.04) 0px, transparent 50%);
+}

@@ -1,0 +1,259 @@
+/* ========================================
+   Hybrid Report Layouts (Web & Print)
+   ======================================== */
+
+.report-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-8);
+}
+
+/* Web View Styles (Screen Only) */
+.report-web-view {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+    margin-bottom: 50px;
+}
+
+@media print {
+
+    .report-web-view,
+    .no-print {
+        display: none !important;
+    }
+
+    .report-print-view {
+        display: block !important;
+    }
+
+    body {
+        background: white !important;
+    }
+
+    #page-container {
+        padding: 0 !important;
+    }
+
+    .sidebar,
+    .topbar {
+        display: none !important;
+    }
+}
+
+/* Print View Styles (Hidden on Screen by Default) */
+.report-print-view {
+    display: none;
+    /* Only shown via @media print */
+}
+
+/* Document Formatting */
+.printable-doc {
+    background: white;
+    width: 210mm;
+    min-height: 297mm;
+    margin: 0 auto;
+    padding: 15mm 20mm;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+    color: #1e293b;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.doc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 12px;
+    margin-bottom: 15px;
+}
+
+.doc-logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.logo-text {
+    font-size: 1.3rem;
+    font-weight: 800;
+    color: #0f172a;
+}
+
+.doc-title-section {
+    text-align: right;
+}
+
+.main-title {
+    font-size: 1.1rem;
+    font-weight: 900;
+    color: #0f172a;
+    margin: 0;
+}
+
+.doc-subtitle {
+    font-size: 0.7rem;
+    color: #64748b;
+    margin: 2px 0 0 0;
+}
+
+/* Meta Section */
+.meta-section {
+    margin-bottom: 15px;
+}
+
+.meta-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px 20px;
+}
+
+.meta-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.meta-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.meta-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.decision-section {
+    padding: 15px 20px;
+    border-radius: 8px;
+    margin-bottom: 15px;
+}
+
+.decision-label {
+    font-size: 1rem;
+    font-weight: 900;
+    margin-bottom: 4px;
+}
+
+.decision-summary {
+    font-size: 0.85rem;
+    margin: 0 0 8px 0;
+    font-weight: 600;
+}
+
+.reason-list {
+    margin: 0;
+    padding-left: 20px;
+    font-size: 0.8rem;
+}
+
+.reason-list li {
+    margin-bottom: 2px;
+}
+
+.section-title {
+    font-size: 0.8rem;
+    font-weight: 800;
+    color: #0f172a;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+}
+
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.report-table th {
+    text-align: left;
+    padding: 8px;
+    background: #f8fafc;
+    color: #64748b;
+    border-bottom: 2px solid #e2e8f0;
+    font-size: 11px;
+}
+
+.report-table td {
+    padding: 8px;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.signature-area {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 30px;
+    border-top: 1px solid #e2e8f0;
+    padding-top: 15px;
+}
+
+.sig-box {
+    width: 45%;
+    text-align: center;
+}
+
+.sig-line {
+    height: 1px;
+    background: #e2e8f0;
+    margin-bottom: 10px;
+}
+
+.status-badge {
+    font-size: 0.7rem;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.status-badge.ok {
+    background: #ecfdf5;
+    color: #10b981;
+}
+
+.status-badge.err {
+    background: #fef2f2;
+    color: #ef4444;
+}
+
+/* Web Section Styling */
+.report-card {
+    background: var(--surface-1);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-xl);
+    padding: var(--space-6);
+}
+
+.report-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-6);
+}
+
+.meta-info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-4);
+}
+
+.meta-info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.meta-info-label {
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+}
+
+.meta-info-val {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}

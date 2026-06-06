@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="Soğuk Zincir İade Otomasyon Sistemi - İlaç güvenliği için yapay zeka destekli sıcaklık analiz ve karar destek platformu">
+    <meta name="keywords" content="soğuk zincir, ilaç güvenliği, MKT, sıcaklık izleme, eczane, GDP, TİTCK">
+    <title>ColdChain AI — Soğuk Zincir İade Otomasyon Sistemi</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+
+    <!-- Chart.js Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+    <script
+        src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script
+        src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+
+    <!-- SheetJS for Excel parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+    <!-- PDF.js for PDF parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="css/variables.css">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/animations.css">
+    <link rel="stylesheet" href="css/dashboard.css">
+    <link rel="stylesheet" href="css/upload.css">
+    <link rel="stylesheet" href="css/analysis.css">
+    <link rel="stylesheet" href="css/report.css">
+    <link rel="stylesheet" href="css/audit.css">
+</head>
+
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="loading-content">
+            <div class="loading-logo">
+                <svg viewBox="0 0 64 64" class="loading-icon">
+                    <defs>
+                        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#06b6d4;stop-opacity:1" />
+                            <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+                        </linearGradient>
+                    </defs>
+                    <path d="M32 4L8 18v28l24 14 24-14V18L32 4z" fill="none" stroke="url(#grad1)" stroke-width="2.5" />
+                    <path d="M32 14l-14 8v16l14 8 14-8V22L32 14z" fill="url(#grad1)" opacity="0.15" />
+                    <circle cx="32" cy="28" r="4" fill="url(#grad1)" />
+                    <path d="M28 36h8v6h-8z" fill="url(#grad1)" opacity="0.7" />
+                    <path d="M26 42h12v2h-12z" fill="url(#grad1)" opacity="0.5" />
+                </svg>
+            </div>
+            <h1 class="loading-title">ColdChain AI</h1>
+            <p class="loading-subtitle">Soğuk Zincir İade Otomasyon Sistemi</p>
+            <div class="loading-bar">
+                <div class="loading-bar-fill"></div>
+            </div>
+            <p class="loading-status">Sistem başlatılıyor...</p>
+        </div>
+    </div>
+
+    <!-- Main Application -->
+    <div id="app" class="app hidden">
+        <!-- Sidebar Navigation -->
+        <aside id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-container">
+                    <svg viewBox="0 0 64 64" class="logo-icon">
+                        <defs>
+                            <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#06b6d4;stop-opacity:1" />
+                                <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+                            </linearGradient>
+                        </defs>
+                        <path d="M32 4L8 18v28l24 14 24-14V18L32 4z" fill="none" stroke="url(#logoGrad)"
+                            stroke-width="2.5" />
+                        <path d="M32 14l-14 8v16l14 8 14-8V22L32 14z" fill="url(#logoGrad)" opacity="0.15" />
+                        <circle cx="32" cy="28" r="4" fill="url(#logoGrad)" />
+                        <path d="M28 36h8v6h-8z" fill="url(#logoGrad)" opacity="0.7" />
+                    </svg>
+                    <div class="logo-text-group">
+                        <div class="logo-text">
+                            <span class="logo-name">ColdChain</span>
+                            <span class="logo-badge">AI</span>
+                        </div>
+                        <div class="logo-subtitle"
+                            style="font-size: 0.65rem; color: var(--text-tertiary); letter-spacing: 1px; font-weight: 700; text-transform: uppercase; margin-top: -2px;">
+                            by TRAGIC</div>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <ul class="nav-list">
+                    <li class="nav-item active" data-page="dashboard">
+                        <button class="nav-link" id="nav-dashboard">
+                            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <rect x="3" y="3" width="7" height="7" rx="1" />
+                                <rect x="14" y="3" width="7" height="7" rx="1" />
+                                <rect x="3" y="14" width="7" height="7" rx="1" />
+                                <rect x="14" y="14" width="7" height="7" rx="1" />
+                            </svg>
+                            <span>Kontrol Paneli</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" data-page="upload">
+                        <button class="nav-link" id="nav-upload">
+                            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                                <polyline points="17 8 12 3 7 8" />
+                                <line x1="12" y1="3" x2="12" y2="15" />
+                            </svg>
+                            <span>Veri Yükleme</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" data-page="analysis">
+                        <button class="nav-link" id="nav-analysis">
+                            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                            </svg>
+                            <span>Analiz & Karar</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" data-page="report">
+                        <button class="nav-link" id="nav-report">
+                            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+                                <polyline points="14 2 14 8 20 8" />
+                                <line x1="16" y1="13" x2="8" y2="13" />
+                                <line x1="16" y1="17" x2="8" y2="17" />
+                                <polyline points="10 9 9 9 8 9" />
+                            </svg>
+                            <span>Rapor</span>
+                        </button>
+                    </li>
+                    <li class="nav-item" data-page="audit">
+                        <button class="nav-link" id="nav-audit">
+                            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                            </svg>
+                            <span>Denetim İzi</span>
+                        </button>
+                    </li>
+                </ul>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="compliance-badges">
+                    <span class="badge badge-gdp" title="TİTCK İyi Dağıtım Uygulamaları">GDP</span>
+                    <span class="badge badge-fda" title="FDA 21 CFR Part 11">FDA</span>
+                    <span class="badge badge-kvkk" title="KVKK Uyumlu">KVKK</span>
+                </div>
+                <div class="version-info">
+                    <span>v1.0.0 • TRAGIC</span>
+                    <span class="status-dot online"></span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main id="main-content" class="main-content">
+            <!-- Top Bar -->
+            <header class="topbar">
+                <div class="topbar-left">
+                    <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Menüyü aç/kapat">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="3" y1="6" x2="21" y2="6" />
+                            <line x1="3" y1="12" x2="21" y2="12" />
+                            <line x1="3" y1="18" x2="21" y2="18" />
+                        </svg>
+                    </button>
+                    <div class="breadcrumb">
+                        <span id="page-title" class="breadcrumb-current">Kontrol Paneli</span>
+                    </div>
+                </div>
+                <div class="topbar-right">
+                    <div class="topbar-search">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                        <input type="text" id="global-search" placeholder="Ara... (Ctrl+K)" class="search-input">
+                    </div>
+                    <button id="notification-btn" class="topbar-btn" aria-label="Bildirimler">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                            <path d="M13.73 21a2 2 0 01-3.46 0" />
+                        </svg>
+                        <span class="notification-badge" id="notification-count">3</span>
+                    </button>
+                    <div class="user-avatar" id="user-menu">
+                        <span>EA</span>
+                    </div>
+                    
+                    <!-- Window Controls -->
+                    <div class="window-controls">
+                        <button id="btn-minimize" class="window-btn" aria-label="Simge Durumuna Küçült">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                        </button>
+                        <button id="btn-maximize" class="window-btn" aria-label="Pencere Modu / Tam Ekran">
+                            <!-- Tam ekran ikonu (tek kare) — pencere modundayken üst üste iki kare gösterilecek -->
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" id="maximize-icon">
+                                <rect x="4" y="4" width="16" height="16" rx="2" />
+                            </svg>
+                        </button>
+                        <button id="btn-close" class="window-btn close" aria-label="Kapat">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18" />
+                                <line x1="6" y1="6" x2="18" y2="18" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Page Container -->
+            <div id="page-container" class="page-container">
+                <!-- Dashboard Page -->
+                <section id="page-dashboard" class="page active">
+                    <!-- Will be populated by JS -->
+                </section>
+
+                <!-- Upload Page -->
+                <section id="page-upload" class="page">
+                    <!-- Will be populated by JS -->
+                </section>
+
+                <!-- Analysis Page -->
+                <section id="page-analysis" class="page">
+                    <!-- Will be populated by JS -->
+                </section>
+
+                <!-- Report Page -->
+                <section id="page-report" class="page">
+                    <!-- Will be populated by JS -->
+                </section>
+
+                <!-- Audit Page -->
+                <section id="page-audit" class="page">
+                    <!-- Will be populated by JS -->
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Modal Container -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div id="modal-content" class="modal-content">
+            <!-- Dynamic modal content -->
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/utils.js"></script>
+    <script src="js/state.js"></script>
+    <script src="js/mkt-engine.js"></script>
+    <script src="js/smart-parser.js"></script>
+    <script src="js/data-parser.js"></script>
+    <script src="js/ai-vision.js"></script>
+    <script src="js/drug-formulary.js"></script>
+    <script src="js/decision-engine.js"></script>
+    <script src="js/audit-trail.js"></script>
+    <script src="js/components.js"></script>
+    <script src="js/pages/dashboard.js"></script>
+    <script src="js/pages/upload.js"></script>
+    <script src="js/pages/analysis.js"></script>
+    <script src="js/pages/report.js"></script>
+    <script src="js/pages/audit.js"></script>
+    <script src="js/app.js"></script>
+</body>
+
+</html>
