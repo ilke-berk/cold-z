@@ -6,6 +6,24 @@ const AnalysisPage = {
     selectedPointIndex: -1,
     currentInterval: '1h',
 
+    intervalOptions: [
+        { key: '10m', label: '10 dk', ms: 10 * 60000 },
+        { key: '30m', label: '30 dk', ms: 30 * 60000 },
+        { key: '1h',  label: '1 sa',  ms: 60 * 60000 },
+        { key: '2h',  label: '2 sa',  ms: 120 * 60000 },
+        { key: '3h',  label: '3 sa',  ms: 180 * 60000 },
+        { key: '6h',  label: '6 sa',  ms: 360 * 60000 },
+        { key: 'daily', label: 'Gün', ms: 24 * 3600000 }
+    ],
+
+    tsMs(t) {
+        if (t == null) return NaN;
+        if (t instanceof Date) return t.getTime();
+        if (typeof t === 'number') return t;
+        const parsed = new Date(t).getTime();
+        return isNaN(parsed) ? NaN : parsed;
+    },
+
     /**
      * Veri boşluğu analizi: ortalama aralığın 1.5 katından uzun boşlukları tespit eder
      */
@@ -141,24 +159,23 @@ const AnalysisPage = {
     resampleData(data, interval) {
         if (!data || data.length === 0 || interval === 'raw') return data;
 
-        const msMap = {
-            '10m': 10 * 60000,
-            '30m': 30 * 60000,
-            '1h': 60 * 60000,
-            '2h': 120 * 60000,
-            'daily': 24 * 3600000
-        };
-
-        const step = msMap[interval];
+        const opt = this.intervalOptions.find(o => o.key === interval);
+        const step = opt ? opt.ms : null;
         if (!step) return data;
 
+        // Basit seyrekleştirme: ilk noktayı al, sonra her `step` ms geçtiğinde
+        // bir sonraki noktayı al. Veri zaten kaba ise (örn. saatlik veriye 10 dk
+        // seçilirse) tüm noktalar geçer; tam tersi (5 dk veriye 3 saat) ise
+        // her 3 saatte bir nokta seçilir.
         const resampled = [];
-        let nextTargetTime = data[0].timestamp.getTime();
+        let nextTargetTime = this.tsMs(data[0].timestamp);
 
         for (const item of data) {
-            if (item.timestamp.getTime() >= nextTargetTime) {
+            const t = this.tsMs(item.timestamp);
+            if (isNaN(t)) continue;
+            if (t >= nextTargetTime) {
                 resampled.push(item);
-                nextTargetTime = item.timestamp.getTime() + step;
+                nextTargetTime = t + step;
             }
         }
         return resampled;
@@ -168,7 +185,17 @@ const AnalysisPage = {
         this.currentInterval = interval;
         this.selectedPointIndex = -1;
         this.render();
-        Utils.showToast(`${interval.replace('h', ' Saat').replace('m', ' Dakika').replace('daily', 'Günlük')} görünümüne geçildi`, 'info');
+
+        const opt = this.intervalOptions.find(o => o.key === interval);
+        const label = opt ? opt.label : interval;
+        const totalCount = AppState.parsedData?.length || 0;
+        const shownCount = this.resampleData(AppState.parsedData || [], interval).length;
+
+        let msg = `${label} aralığı: ${shownCount}/${totalCount} nokta gösteriliyor`;
+        if (shownCount === totalCount && totalCount > 0) {
+            msg += ' (veri zaten bu aralıktan daha seyrek)';
+        }
+        Utils.showToast(msg, 'info');
     },
 
     handleKeyDown(e) {
@@ -363,11 +390,11 @@ const AnalysisPage = {
                     <div style="display:flex;gap:12px;align-items:center">
                         <!-- Interval Toggles -->
                         <div class="interval-toggles" style="display:flex;background:var(--surface-2);padding:4px;border-radius:8px;gap:4px">
-                            ${['10m', '30m', '1h', '2h', 'daily'].map(int => `
-                                <button class="btn btn-sm ${this.currentInterval === int ? 'btn-primary' : ''}" 
+                            ${this.intervalOptions.map(opt => `
+                                <button class="btn btn-sm ${this.currentInterval === opt.key ? 'btn-primary' : ''}"
                                     style="padding:4px 10px;font-size:0.7rem;min-width:45px;border:none"
-                                    onclick="AnalysisPage.changeInterval('${int}')">
-                                    ${int.replace('daily', 'Gün')}
+                                    onclick="AnalysisPage.changeInterval('${opt.key}')">
+                                    ${opt.label}
                                 </button>
                             `).join('')}
                         </div>

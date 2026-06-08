@@ -70,7 +70,7 @@ const upload = multer({
 });
 
 // ─── Statik dosya sunumu ────────────────────────────────────
-app.use(express.static(path.join(__dirname)));
+app.use(express.static(path.join(__dirname), { index: 'app.html' }));
 app.use(express.json({ limit: '20mb' }));
 
 // ─── BÖLÜM: CORS Eklemesi (Electron file:// protokolü için)

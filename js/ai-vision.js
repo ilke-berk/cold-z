@@ -49,7 +49,7 @@ const AIVision = {
      */
     async checkHealth() {
         try {
-            const res = await fetch('http://localhost:3000/api/health');
+            const res = await fetch('/api/health');
             const data = await res.json();
             return {
                 serverReady: data.status === 'ok',
@@ -186,7 +186,7 @@ const AIVision = {
         }, intervalMs);
 
         try {
-            const response = await fetch('http://localhost:3000' + this.ENDPOINT, {
+            const response = await fetch(this.ENDPOINT, {
                 method: 'POST',
                 body: formData
             });

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ColdChain AI — Kontrol Odası</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0a0e14; overflow: hidden; }
+    * { -webkit-font-smoothing: antialiased; }
+    #root { height: 100vh; width: 100vw; }
+    .cc-boot { position: fixed; inset: 0; display: grid; place-items: center; background: #0a0e14;
+      color: #46b6da; font-family: 'Space Grotesk', sans-serif; z-index: 999; transition: opacity .35s; }
+    .cc-boot.hide { opacity: 0; pointer-events: none; }
+    .cc-boot .ring { width: 38px; height: 38px; border: 3px solid rgba(70,182,218,.25); border-top-color: #46b6da;
+      border-radius: 50%; animation: ccspin .8s linear infinite; }
+    @keyframes ccspin { to { transform: rotate(360deg); } }
+    .cc-boot .lbl { margin-top: 16px; font-size: 13px; letter-spacing: .5px; color: rgba(255,255,255,.6); }
+  </style>
+</head>
+<body data-app-theme="dark">
+  <div id="root"></div>
+  <div id="print-root"></div>
+  <div class="cc-boot" id="ccBoot"><div style="text-align:center"><div class="ring"></div><div class="lbl">ColdChain AI yükleniyor…</div></div></div>
+
+  <!-- Üçüncü taraf: Excel + PDF okuma -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+
+  <!-- React + Babel -->
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <!-- Analiz motorları (mevcut backend ile aynı çekirdek) -->
+  <script src="js/utils.js"></script>
+  <script src="js/mkt-engine.js"></script>
+  <script src="js/smart-parser.js"></script>
+  <script src="js/data-parser.js"></script>
+  <script src="js/ai-vision.js"></script>
+  <script src="js/drug-formulary.js"></script>
+  <script src="js/decision-engine.js"></script>
+
+  <!-- Kontrol Odası veri katmanı -->
+  <script src="ui/cc-data.js"></script>
+  <script src="ui/cr-scenarios.js"></script>
+  <script src="ui/cc-store.js"></script>
+  <script src="ui/cc-pipeline.js"></script>
+
+  <!-- Kontrol Odası arayüzü (React/JSX) -->
+  <script type="text/babel" src="ui/cc-shared.jsx"></script>
+  <script type="text/babel" src="ui/dir-controlroom.jsx"></script>
+  <script type="text/babel" src="ui/cr-scan.jsx"></script>
+  <script type="text/babel" src="ui/cr-decisionchart.jsx"></script>
+  <script type="text/babel" src="ui/cr-pdfpreview.jsx"></script>
+  <script type="text/babel" src="ui/cr-login.jsx"></script>
+  <script type="text/babel" src="ui/cr-upload.jsx"></script>
+  <script type="text/babel" src="ui/cr-analysis.jsx"></script>
+  <script type="text/babel" src="ui/cr-export.jsx"></script>
+  <script type="text/babel" src="ui/cr-report.jsx"></script>
+  <script type="text/babel" src="ui/cr-settings.jsx"></script>
+  <script type="text/babel" src="ui/cr-app.jsx"></script>
+
+  <script type="text/babel" data-presets="env,react">
+    const start = () => {
+      if (!window.CRApp || !window.CRShell) return setTimeout(start, 30);
+      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(window.CRApp));
+      const boot = document.getElementById('ccBoot');
+      if (boot) { boot.classList.add('hide'); setTimeout(() => boot.remove(), 400); }
+    };
+    start();
+  </script>
+</body>
+</html>

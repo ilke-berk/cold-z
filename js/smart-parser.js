@@ -118,7 +118,9 @@ var SmartParser = (function () {
             
             // Sıcaklık için de benzer koruma
             const unitRe = new RegExp(`(?<![\\d])([+-]?\\d{1,3}${dec}\\d{1,2})\\s*(?:°\\s*[CcFf]|℃|℉)`, 'g');
-            const bareRe = new RegExp(`(?<![\\d.])([+-]?\\d{1,3}${dec}\\d{1,2})(?![\\d.])`, 'g');
+            // Ondalık kısmı opsiyonel — bazı satırlarda dolap sıcaklığı tam sayı yazılabiliyor (örn. "5", "19").
+            // Look-behind/ahead'e ',', ':', '-' eklendi: tarih (23.03.2026), saat (00:31) ve ISO tarih (2026-03-23) yanlış yakalanmasın.
+            const bareRe = new RegExp(`(?<![\\d.,:\\-])([+-]?\\d{1,3}(?:${dec}\\d{1,2})?)(?![\\d.,:\\-])`, 'g');
 
             return function(line) {
                 // Önce tarihi bul
