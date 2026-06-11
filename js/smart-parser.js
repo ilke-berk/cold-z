@@ -2,11 +2,37 @@
  * ColdChain AI — Smart Hybrid Parser v4.0 (Universal Reader Edition)
  */
 var SmartParser = (function () {
+    function cleanYearOutliers(data) {
+        if (!data || data.length === 0) return data;
+        const yearCounts = {};
+        for (const item of data) {
+            const y = new Date(item.timestamp).getFullYear();
+            if (!isNaN(y)) {
+                yearCounts[y] = (yearCounts[y] || 0) + 1;
+            }
+        }
+        let maxCount = 0;
+        let modeYear = new Date().getFullYear();
+        for (const [y, count] of Object.entries(yearCounts)) {
+            if (count > maxCount) {
+                maxCount = count;
+                modeYear = parseInt(y);
+            }
+        }
+        const minYear = modeYear - 1;
+        const maxYear = modeYear + 1;
+        return data.filter(item => {
+            const y = new Date(item.timestamp).getFullYear();
+            return y >= minYear && y <= maxYear;
+        });
+    }
+
     return {
         SCHEMA_ENDPOINT: '/api/analyze-schema',
         AI_ENDPOINT: '/api/extract',
+        cleanYearOutliers,
 
-        async parseSmart(file, onProgress = () => { }, onLog = () => { }) {
+        async parseSmart(file, onProgress = () => { }, onLog = () => { }, options = {}) {
             const startTime = Date.now();
             const log = (icon, msg, status = 'info') => {
                 console.log(`${icon} ${msg}`);
@@ -31,29 +57,35 @@ var SmartParser = (function () {
                 return await this.fullAIFallback(file, onProgress, onLog);
             }
 
-            // ─── ADIM 2: Hızlı Tanıma (Heuristic) ─────────────────
-            log('⚡', 'Hızlı tanıma motoru çalıştırılıyor...');
-            const fastResult = await this.tryHeuristicParse(file, onProgress, log);
-            if (fastResult) {
-                log('⚡', 'Bilinen şablon ile anında çözüldü.', 'success');
-                return fastResult;
-            }
-
-            // ─── ADIM 3: AI Schema Learning (v4.0) ──────────────
-            onProgress(10);
-            const bestPages = await this.findBestSchemaPages(file);
             let schemaResult = null;
-            let schema = null;
-            
-            for (let i = 0; i < Math.min(2, bestPages.length); i++) {
-                const page = bestPages[i];
-                log('🧠', `AI Sayfa ${page} yapısını öğreniyor...`);
-                schemaResult = await this.discoverSchema(file, page);
+            let schema = options.columnMapping;
 
-                if (schemaResult.success && schemaResult.schema?.dateOrder) {
-                    schema = schemaResult.schema;
-                    log('🧠', `Format Öğrenildi: ${schema.deviceBrand || 'Tanımsız'} (${schema.dateOrder} düzeni)`, 'success');
-                    break;
+            if (schema) {
+                log('🧠', `Kullanıcı tanımlı PDF şeması yüklendi: ${schema.deviceBrand || 'Tanımsız'}`, 'success');
+                schemaResult = { success: true, schema, cost: { total: 0 } };
+            } else {
+                // ─── ADIM 2: Hızlı Tanıma (Heuristic) ─────────────────
+                log('⚡', 'Hızlı tanıma motoru çalıştırılıyor...');
+                const fastResult = await this.tryHeuristicParse(file, onProgress, log);
+                if (fastResult) {
+                    log('⚡', 'Bilinen şablon ile anında çözüldü.', 'success');
+                    return fastResult;
+                }
+
+                // ─── ADIM 3: AI Schema Learning (v4.0) ──────────────
+                onProgress(10);
+                const bestPages = await this.findBestSchemaPages(file);
+                
+                for (let i = 0; i < Math.min(2, bestPages.length); i++) {
+                    const page = bestPages[i];
+                    log('🧠', `AI Sayfa ${page} yapısını öğreniyor...`);
+                    schemaResult = await this.discoverSchema(file, page);
+
+                    if (schemaResult.success && schemaResult.schema?.dateOrder) {
+                        schema = schemaResult.schema;
+                        log('🧠', `Format Öğrenildi: ${schema.deviceBrand || 'Tanımsız'} (${schema.dateOrder} düzeni)`, 'success');
+                        break;
+                    }
                 }
             }
 
@@ -117,10 +149,10 @@ var SmartParser = (function () {
             const timeRe = new RegExp(`(?<![\\d])(\\d{1,2})[:.](\\d{2})(?![:.]\\d)(?![\\d])(?!\\s*[°CcFf℃℉%])`, 'i');
             
             // Sıcaklık için de benzer koruma
-            const unitRe = new RegExp(`(?<![\\d])([+-]?\\d{1,3}${dec}\\d{1,2})\\s*(?:°\\s*[CcFf]|℃|℉)`, 'g');
+            const unitRe = new RegExp(`(?<![\\d])([+-]?\\d{1,3}(?:${dec}\\d{1,2})?)\\s*(?:°\\s*[CcFf]|℃|℉)`, 'g');
             // Ondalık kısmı opsiyonel — bazı satırlarda dolap sıcaklığı tam sayı yazılabiliyor (örn. "5", "19").
             // Look-behind/ahead'e ',', ':', '-' eklendi: tarih (23.03.2026), saat (00:31) ve ISO tarih (2026-03-23) yanlış yakalanmasın.
-            const bareRe = new RegExp(`(?<![\\d.,:\\-])([+-]?\\d{1,3}(?:${dec}\\d{1,2})?)(?![\\d.,:\\-])`, 'g');
+            const bareRe = new RegExp(`(?<![\\d.,:\\-])([+-]?\\d{1,3}(?:${dec}\\d{1,2})?)(?![\\d.,:\\-])(?!\\s*%)`, 'g');
 
             return function(line) {
                 // Önce tarihi bul
@@ -147,12 +179,12 @@ var SmartParser = (function () {
                 const temps = [];
                 let match;
                 unitRe.lastIndex = 0;
-                while ((match = unitRe.exec(line)) !== null) {
+                while ((match = unitRe.exec(afterDate)) !== null) {
                     temps.push(parseFloat(match[1].replace(',', '.')));
                 }
                 if (temps.length === 0) {
                     bareRe.lastIndex = 0;
-                    while ((match = bareRe.exec(line)) !== null) {
+                    while ((match = bareRe.exec(afterDate)) !== null) {
                         temps.push(parseFloat(match[1].replace(',', '.')));
                     }
                 }
@@ -199,7 +231,8 @@ var SmartParser = (function () {
             }
             // Kronolojik sıralama
             finalData.sort((a, b) => a.timestamp - b.timestamp);
-            return { data: finalData, resolvedFormat };
+            const cleanedData = cleanYearOutliers(finalData);
+            return { data: cleanedData, resolvedFormat };
         },
 
         async tryHeuristicParse(file, onProgress, log) {
@@ -270,11 +303,13 @@ var SmartParser = (function () {
             const response = await fetch(this.AI_ENDPOINT, { method: 'POST', body: formData });
             const result = await response.json();
             if (result.success) {
+                const parsedData = result.readings.map(r => ({ timestamp: new Date(r.date + ' ' + r.time).getTime(), temperature: r.temperature }));
+                const cleanedData = cleanYearOutliers(parsedData);
                 return {
                     source: file.name,
                     method: 'full-ai-ocr-v4',
-                    parsedData: result.readings.map(r => ({ timestamp: new Date(r.date + ' ' + r.time).getTime(), temperature: r.temperature })),
-                    rowCount: result.readings.length,
+                    parsedData: cleanedData,
+                    rowCount: cleanedData.length,
                     metadata: result.metadata,
                     cost: result.stats?.cost || 0
                 };
@@ -325,13 +360,14 @@ var SmartParser = (function () {
                 if (ts) finalData.push({ timestamp: ts, temperature: item.tempStr });
             }
             finalData.sort((a, b) => a.timestamp - b.timestamp);
+            const cleanedData = cleanYearOutliers(finalData);
 
             const metadata = {
                 deviceBrand: 'Metin Dosyası',
                 extractionMethod: 'text-parser-v4',
                 schema: best.schema
             };
-            const processed = DataParser.postProcess(finalData, [], metadata, { resampling: false });
+            const processed = DataParser.postProcess(cleanedData, [], metadata, { resampling: false });
             onProgress(100);
 
             return {

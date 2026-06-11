@@ -60,6 +60,17 @@
   .up-aci:hover{background:var(--pn2);color:var(--tx);}
   .up-spin{width:18px;height:18px;border:2px solid var(--ln2);border-top-color:var(--sig);border-radius:50%;animation:upspin .8s linear infinite;}
   @keyframes upspin{to{transform:rotate(360deg)}}
+  .up-mapBtn{font-size:11px;color:var(--sig);background:transparent;border:none;cursor:pointer;padding:4px 8px;border-radius:4px;display:inline-flex;align-items:center;gap:4px;margin-top:5px;transition:.15s;font-weight:600;}
+  .up-mapBtn:hover{background:var(--sigS);}
+  .up-mapPanel{background:var(--pn2);border:1px solid var(--ln);border-radius:8px;padding:12px;margin-top:8px;animation:upfade .25s ease;}
+  .up-mapGrid{display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:10px;margin-bottom:12px;}
+  .up-mapField{display:flex;flex-direction:column;gap:4px;}
+  .up-mapLabel{font-size:10px;text-transform:uppercase;color:var(--t3);font-weight:700;letter-spacing:.3px;}
+  .up-mapSelect{background:var(--pn);border:1px solid var(--ln2);border-radius:6px;color:var(--tx);padding:5px 8px;font-size:11.5px;outline:none;font-family:'Space Grotesk',sans-serif;}
+  .up-mapSelect:focus{border-color:var(--sig);}
+  .up-previewTbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:11px;font-family:'JetBrains Mono',monospace;}
+  .up-previewTbl th{text-align:left;color:var(--t3);padding:4px 6px;background:var(--pn);border-bottom:1px solid var(--ln2);font-size:10px;}
+  .up-previewTbl td{padding:4px 6px;color:var(--t2);border-bottom:1px solid var(--ln);}
   `;
 
   const RANGES = {
@@ -117,14 +128,144 @@
 
     const setF = (k, v) => setForm(s => ({ ...s, [k]: v }));
 
+    const detectFileColumns = async (fileObj) => {
+      const { file } = fileObj;
+      try {
+        const ext = file.name.split('.').pop().toLowerCase();
+        let rawData = null;
+        if (ext === 'xlsx' || ext === 'xls') {
+          rawData = await DataParser.readExcel(file);
+        } else if (ext === 'csv') {
+          rawData = await DataParser.readCSV(file);
+        } else if (ext === 'pdf') {
+          // PDF: Arka planda AI ile şema tespiti yap
+          setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Şema öğreniliyor...' } : f));
+          const res = await SmartParser.discoverSchema(file, 1);
+          if (res.success && res.schema) {
+            const schema = res.schema;
+            // Tarayıcı tarafında hızlı re-parse
+            setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Numune toplanıyor...' } : f));
+            const harvest = await SmartParser.harvestWithDeterministicParser(file, schema);
+            const previewRows = (harvest.data || []).slice(0, 3).map(r => ({
+              date: Utils.formatDateTime(r.timestamp),
+              temp: r.temperature
+            }));
+            
+            setFiles(current => current.map(f => f.id === fileObj.id ? {
+              ...f,
+              rows: previewRows,
+              status: 'Şema hazır',
+              columnMapping: {
+                dateOrder: schema.dateOrder || 'dmy',
+                dateSep: schema.dateSep || '.',
+                timeSep: schema.timeSep || ':',
+                decimalSep: schema.decimalSep || ',',
+                tempColIndex: schema.tempColIndex ?? 0,
+                deviceBrand: schema.deviceBrand || 'Otomatik',
+                deviceSerial: schema.deviceSerial || ''
+              }
+            } : f));
+          } else {
+            setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Hazır (Otomatik AI)' } : f));
+          }
+          return;
+        }
+        
+        if (rawData && rawData.headers && rawData.headers.length) {
+          const mapping = await DataParser.detectColumns(rawData.headers, rawData.rows);
+          setFiles(current => current.map(f => f.id === fileObj.id ? {
+            ...f,
+            headers: rawData.headers,
+            rows: rawData.rows.slice(0, 3),
+            columnMapping: {
+              dateCol: mapping.dateCol || rawData.headers[0] || '',
+              timeCol: mapping.timeCol || '__same__',
+              tempCol: mapping.tempCol || rawData.headers[1] || '',
+              humidityCol: mapping.humidityCol || '__none__'
+            }
+          } : f));
+        }
+      } catch (e) {
+        console.error("Belge analizi başarısız:", file.name, e);
+        setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Hazır (Hata: ' + e.message + ')' } : f));
+      }
+    };
+
+    const updateFileMapping = async (fileId, key, value) => {
+      let updatedFile = null;
+      
+      setFiles(current => {
+        return current.map(f => {
+          if (f.id === fileId) {
+            const nextMapping = {
+              ...f.columnMapping,
+              [key]: value
+            };
+            updatedFile = { ...f, columnMapping: nextMapping };
+            return updatedFile;
+          }
+          return f;
+        });
+      });
+
+      // PDF ise, yeni şemayla arka planda tekrar parse et ve önizlemeyi güncelle!
+      if (updatedFile && updatedFile.kind === 'pdf' && updatedFile.columnMapping) {
+        try {
+          setFiles(current => current.map(f => f.id === fileId ? { ...f, status: 'Güncelleniyor...' } : f));
+          const harvest = await SmartParser.harvestWithDeterministicParser(updatedFile.file, updatedFile.columnMapping);
+          const previewRows = (harvest.data || []).slice(0, 3).map(r => ({
+            date: Utils.formatDateTime(r.timestamp),
+            temp: r.temperature
+          }));
+          setFiles(current => current.map(f => f.id === fileId ? { ...f, rows: previewRows, status: 'Şema güncellendi' } : f));
+        } catch (e) {
+          console.error("PDF anlık re-parse başarısız:", e);
+          setFiles(current => current.map(f => f.id === fileId ? { ...f, status: 'Re-parse hatası' } : f));
+        }
+      }
+    };
+    
+    const toggleShowMapping = (fileId) => {
+      setFiles(current => current.map(f => {
+        if (f.id === fileId) {
+          return {
+            ...f,
+            showMapping: !f.showMapping
+          };
+        }
+        return f;
+      }));
+    };
+
     const addFiles = (fileList) => {
       const arr = Array.from(fileList || []);
       if (!arr.length) return;
       setError(null); setResult(null); setPipe([]);
-      setFiles(prev => [...prev, ...arr.map(file => {
+      const newFiles = arr.map(file => {
         const kind = detectKind(file.name);
-        return { id: 'f' + (++seq), file, name: file.name, kind, size: fmtSize(file.size), ai: kind === 'pdf' || kind === 'image', prog: 0, status: 'Hazır', done: false, error: false };
-      })]);
+        return { 
+          id: 'f' + (++seq), 
+          file, 
+          name: file.name, 
+          kind, 
+          size: fmtSize(file.size), 
+          ai: kind === 'pdf' || kind === 'image', 
+          prog: 0, 
+          status: 'Hazır', 
+          done: false, 
+          error: false,
+          headers: [],
+          rows: [],
+          columnMapping: null,
+          showMapping: false
+        };
+      });
+      setFiles(prev => [...prev, ...newFiles]);
+      newFiles.forEach(f => {
+        if (f.kind === 'excel' || f.kind === 'csv' || f.kind === 'pdf') {
+          detectFileColumns(f);
+        }
+      });
     };
     const removeFile = id => setFiles(f => f.filter(x => x.id !== id));
 
@@ -140,7 +281,18 @@
       const cfg = { lowerLimit: limits.lo, upperLimit: limits.hi, torLimit: limits.tor };
       try {
         const out = await CCPipeline.run(
-          files.map(f => ({ id: f.id, file: f.file })),
+          files.map(f => {
+            const cleanMapping = f.columnMapping ? { ...f.columnMapping } : null;
+            if (cleanMapping && f.kind !== 'pdf') {
+              if (cleanMapping.timeCol === '__same__' || cleanMapping.timeCol === '__none__') {
+                cleanMapping.timeCol = '';
+              }
+              if (cleanMapping.humidityCol === '__none__') {
+                cleanMapping.humidityCol = '';
+              }
+            }
+            return { id: f.id, file: f.file, columnMapping: cleanMapping };
+          }),
           form, cfg,
           {
             onStep: (s) => setPipe(p => [...p, s]),
@@ -218,19 +370,169 @@
 
               {files.length > 0 && (
                 <div className="up-queue">
-                  {files.map(f => { const [c, bg] = kindColor[f.kind] || kindColor.excel; return (
-                    <div key={f.id} className="up-row">
-                      <div className="up-fic" style={{ color: c, background: bg }}><Ic.report size={19} /></div>
-                      <div className="up-finfo">
-                        <div className="up-fname">{f.name}{f.ai && <span className="up-smart">Smart</span>}</div>
-                        <div className="up-fmeta">{f.size} · {f.kind.toUpperCase()}</div>
+                  {files.map(f => {
+                    const [c, bg] = kindColor[f.kind] || kindColor.excel;
+                    return (
+                      <div key={f.id} style={{ display: 'flex', flexDirection: 'column', gap: 0, background: 'var(--pn)', border: '1px solid var(--ln2)', borderRadius: 10, padding: '4px 0', marginBottom: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 13, padding: '8px 14px' }}>
+                          <div className="up-fic" style={{ color: c, background: bg }}><Ic.report size={19} /></div>
+                          <div className="up-finfo" style={{ flex: 1, minWidth: 0 }}>
+                            <div className="up-fname" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}{f.ai && <span className="up-smart">Smart</span>}</div>
+                            <div className="up-fmeta">{f.size} · {f.kind.toUpperCase()}</div>
+                            {f.columnMapping && (
+                              <button className="up-mapBtn" onClick={() => toggleShowMapping(f.id)}>
+                                <Ic.grid size={12} /> {f.showMapping ? 'Eşleştirmeyi Gizle' : 'Sütun Eşleştirmeyi Düzenle'}
+                              </button>
+                            )}
+                          </div>
+                          <div className="up-prog" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
+                            <div className="up-bar"><div className="up-barf" style={{ width: f.prog + '%', background: f.error ? 'var(--bad)' : f.done ? 'var(--ok)' : 'var(--sig)' }} /></div>
+                            <div className="up-fstat" style={{ color: f.error ? 'var(--bad)' : f.done ? 'var(--ok)' : 'var(--t2)' }}>{f.done ? '✓ ' : ''}{f.status}</div>
+                          </div>
+                          <button className="up-rm" onClick={() => removeFile(f.id)}><Ic.x size={14} /></button>
+                        </div>
+                        
+                        {f.columnMapping && f.showMapping && f.kind !== 'pdf' && (
+                          <div className="up-mapPanel" style={{ margin: '4px 14px 10px' }}>
+                            <div className="up-mapGrid">
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Tarih Sütunu</label>
+                                <select className="up-mapSelect" value={f.columnMapping.dateCol} 
+                                        onChange={e => updateFileMapping(f.id, 'dateCol', e.target.value)}>
+                                  {f.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                                </select>
+                              </div>
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Saat Sütunu</label>
+                                <select className="up-mapSelect" value={f.columnMapping.timeCol} 
+                                        onChange={e => updateFileMapping(f.id, 'timeCol', e.target.value)}>
+                                  <option value="__same__">[Tarih Sütunu ile Aynı / Birleşik]</option>
+                                  <option value="__none__">[Saat Yok / 00:00]</option>
+                                  {f.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                                </select>
+                              </div>
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Sıcaklık Sütunu</label>
+                                <select className="up-mapSelect" value={f.columnMapping.tempCol} 
+                                        onChange={e => updateFileMapping(f.id, 'tempCol', e.target.value)}>
+                                  {f.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                                </select>
+                              </div>
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Nem Sütunu</label>
+                                <select className="up-mapSelect" value={f.columnMapping.humidityCol || '__none__'} 
+                                        onChange={e => updateFileMapping(f.id, 'humidityCol', e.target.value === '__none__' ? '' : e.target.value)}>
+                                  <option value="__none__">[Nem Yok]</option>
+                                  {f.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            
+                            {/* Veri Önizleme */}
+                            {f.rows && f.rows.length > 0 && (
+                              <div style={{ marginTop: 10, overflowX: 'auto' }}>
+                                <div className="up-mapLabel" style={{ marginBottom: 4 }}>Veri Önizleme (İlk {f.rows.length} Satır)</div>
+                                <table className="up-previewTbl">
+                                  <thead>
+                                    <tr>
+                                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>Tarih ({f.columnMapping.dateCol})</th>
+                                      {f.columnMapping.timeCol !== '__same__' && f.columnMapping.timeCol !== '__none__' && (
+                                        <th style={{ padding: '4px 6px', textAlign: 'left' }}>Saat ({f.columnMapping.timeCol})</th>
+                                      )}
+                                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>Sıcaklık ({f.columnMapping.tempCol})</th>
+                                      {f.columnMapping.humidityCol && f.columnMapping.humidityCol !== '__none__' && (
+                                        <th style={{ padding: '4px 6px', textAlign: 'left' }}>Nem ({f.columnMapping.humidityCol})</th>
+                                      )}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {f.rows.map((row, idx) => (
+                                      <tr key={idx}>
+                                        <td style={{ padding: '4px 6px' }}>{String(row[f.columnMapping.dateCol] || '—')}</td>
+                                        {f.columnMapping.timeCol !== '__same__' && f.columnMapping.timeCol !== '__none__' && (
+                                          <td style={{ padding: '4px 6px' }}>{String(row[f.columnMapping.timeCol] || '—')}</td>
+                                        )}
+                                        <td style={{ padding: '4px 6px' }}>{String(row[f.columnMapping.tempCol] || '—')}</td>
+                                        {f.columnMapping.humidityCol && f.columnMapping.humidityCol !== '__none__' && (
+                                          <td style={{ padding: '4px 6px' }}>{String(row[f.columnMapping.humidityCol] || '—')}</td>
+                                        )}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {f.columnMapping && f.showMapping && f.kind === 'pdf' && (
+                          <div className="up-mapPanel" style={{ margin: '4px 14px 10px' }}>
+                            <div className="up-mapGrid">
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Tarih Düzeni (Date Order)</label>
+                                <select className="up-mapSelect" value={f.columnMapping.dateOrder} 
+                                        onChange={e => updateFileMapping(f.id, 'dateOrder', e.target.value)}>
+                                  <option value="dmy">dmy (GG.AA.YYYY)</option>
+                                  <option value="mdy">mdy (AA/GG/YYYY)</option>
+                                  <option value="ymd">ymd (YYYY-AA-GG)</option>
+                                </select>
+                              </div>
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Derece Sütun İndeksi</label>
+                                <select className="up-mapSelect" value={f.columnMapping.tempColIndex} 
+                                        onChange={e => updateFileMapping(f.id, 'tempColIndex', parseInt(e.target.value))}>
+                                  <option value={0}>0 (İlk / Dolap Sıcaklığı)</option>
+                                  <option value={1}>1 (İkinci / Ortam Sıcaklığı)</option>
+                                  <option value={2}>2 (Üçüncü Sıcaklık)</option>
+                                </select>
+                              </div>
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Tarih Ayracı</label>
+                                <select className="up-mapSelect" value={f.columnMapping.dateSep} 
+                                        onChange={e => updateFileMapping(f.id, 'dateSep', e.target.value)}>
+                                  <option value=".">. (Nokta)</option>
+                                  <option value="/">/ (Slaş)</option>
+                                  <option value="-">- (Tire)</option>
+                                  <option value=" ">[Boşluk]</option>
+                                </select>
+                              </div>
+                              <div className="up-mapField">
+                                <label className="up-mapLabel">Ondalık Ayracı</label>
+                                <select className="up-mapSelect" value={f.columnMapping.decimalSep} 
+                                        onChange={e => updateFileMapping(f.id, 'decimalSep', e.target.value)}>
+                                  <option value=",">, (Virgül)</option>
+                                  <option value=".">. (Nokta)</option>
+                                </select>
+                              </div>
+                            </div>
+                            
+                            {/* Veri Önizleme */}
+                            {f.rows && f.rows.length > 0 && (
+                              <div style={{ marginTop: 10, overflowX: 'auto' }}>
+                                <div className="up-mapLabel" style={{ marginBottom: 4 }}>PDF Okuma Numunesi (İlk {f.rows.length} Kayıt)</div>
+                                <table className="up-previewTbl">
+                                  <thead>
+                                    <tr>
+                                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>Tarih & Saat</th>
+                                      <th style={{ padding: '4px 6px', textAlign: 'left' }}>Sıcaklık</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {f.rows.map((row, idx) => (
+                                      <tr key={idx}>
+                                        <td style={{ padding: '4px 6px' }}>{row.date}</td>
+                                        <td style={{ padding: '4px 6px' }}>{row.temp}°C</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <div className="up-prog">
-                        <div className="up-bar"><div className="up-barf" style={{ width: f.prog + '%', background: f.error ? 'var(--bad)' : f.done ? 'var(--ok)' : 'var(--sig)' }} /></div>
-                        <div className="up-fstat" style={{ color: f.error ? 'var(--bad)' : f.done ? 'var(--ok)' : 'var(--t2)' }}>{f.done ? '✓ ' : ''}{f.status}</div>
-                      </div>
-                      <button className="up-rm" onClick={() => removeFile(f.id)}><Ic.x size={14} /></button>
-                    </div>); })}
+                    );
+                  })}
                 </div>
               )}
             </div>

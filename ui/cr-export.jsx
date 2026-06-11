@@ -11,7 +11,11 @@
   };
   const decFallback = decMeta.conditional;
   const fmtTRY = n => n.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
-  const DOC_DATE = '06.06.2026 · 09:24';
+  const getDocDate = () => {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} · ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
   const docId = S => 'CC-' + S.serial + '-2606';
 
   const statsRows = S => ([
@@ -116,6 +120,8 @@
     const m = decMeta[S.decision] || decFallback;
     const target = document.getElementById('print-root');
     if (!target) return null;
+
+    const DOC_DATE = getDocDate();
 
     const tir = S.tir;
     const doc = (
@@ -281,6 +287,7 @@
   function exportExcel(S) {
     const m = decMeta[S.decision] || decFallback;
     const fname = 'ColdChain_Rapor_' + S.batch + '_' + m.t1;
+    const DOC_DATE = getDocDate();
 
     if (window.XLSX) {
       const XLSX = window.XLSX;

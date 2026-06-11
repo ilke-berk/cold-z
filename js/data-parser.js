@@ -39,7 +39,7 @@ const DataParser = {
                     });
                 };
 
-                const smartResult = await SmartParser.parseSmart(file, onProgress, onLog);
+                const smartResult = await SmartParser.parseSmart(file, onProgress, onLog, options);
                 return {
                     source: file.name,
                     brand: brand || 'SmartHybrid',
@@ -226,7 +226,9 @@ const DataParser = {
         const { headers, rows } = rawData;
 
         // --- ADIM 2: Sütun Tespiti ---
-        const colMap = await this.detectColumns(headers, rows);
+        const colMap = options.columnMapping 
+            ? { statusCol: null, ignoredCols: [], ...options.columnMapping }
+            : await this.detectColumns(headers, rows);
         log.push({
             step: 'column_detection',
             message: `Sütunlar tespit edildi → Tarih: "${colMap.dateCol || '—'}", Saat: "${colMap.timeCol || '—'}", Sıcaklık: "${colMap.tempCol || '—'}", Nem: "${colMap.humidityCol || '—'}"`,
@@ -487,25 +489,20 @@ const DataParser = {
                 }
             }
 
-            // Birden fazla aday varsa veya tek aday ama şüpheliyse sor
+            // Birden fazla aday varsa veya tek aday ama şüpheliyse otomatik tahmini seç
             if (candidates.length > 1 || (candidates.length === 1 && patterns.length > 0)) {
                 // Öncelikli olanı bul (tam eşleşme veya en çok benzeyen)
                 const defaultIdx = candidates.findIndex(c =>
                     patterns.some(k => norm(c).includes(k.replace(/[\s_-]/g, '')))
                 ) + 1 || 1;
 
-                // Eğer tek aday varsa ve biz yine de sormak istiyorsak (isCritical gibi davranıyorsa)
-                // Ama kullanıcı "bulabiliyorsan sor" dediği için burada bir eşik koyalım
+                // Eğer tek aday varsa ve biz yine de kontrol ediyorsak
                 if (candidates.length === 1 && patterns.some(k => norm(candidates[0]).includes(k.replace(/[\s_-]/g, '')))) {
-                    return candidates[0]; // Güçlü eşleşme, sorma.
+                    return candidates[0]; // Güçlü eşleşme
                 }
 
-                const promptMsg = `${name} sütununu seçin:\n` +
-                    candidates.map((c, i) => `[ ${i + 1} ] ${c}`).join('\n');
-
-                const choice = window.prompt(promptMsg, defaultIdx.toString());
-                if (!choice) return candidates[defaultIdx - 1] || candidates[0];
-                return candidates[parseInt(choice) - 1] || candidates[0];
+                // window.prompt yerine otomatik olarak en iyi aday seçilir. Kullanıcı UI'dan düzenleyebilir.
+                return candidates[defaultIdx - 1] || candidates[0];
             }
             return candidates[0];
         };

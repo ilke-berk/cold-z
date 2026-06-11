@@ -112,6 +112,7 @@ window.CCPipeline = (function () {
         const res = await DataParser.parse(item.file, null, {
           resampling: false,
           onProgress: (p) => { virtual = Math.max(virtual, p); onFile(item.id, virtual, 'işleniyor'); },
+          columnMapping: item.columnMapping,
         });
         clearInterval(tick);
         onFile(item.id, 100, (res.rowCount || (res.parsedData ? res.parsedData.length : 0)) + ' kayıt');

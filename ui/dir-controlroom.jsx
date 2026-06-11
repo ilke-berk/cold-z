@@ -180,7 +180,7 @@
   function CRShell({ theme = 'dark', active = 'dashboard', onNav = () => {}, crumb, children, overlay }) {
     const dt = theme === 'light' ? 'light' : 'dark';
     const [collapsed, setCollapsed] = useState(false);
-    const [now, setNow] = useState(() => new Date('2026-06-06T09:24:18'));
+    const [now, setNow] = useState(() => new Date());
     const [menu, setMenu] = useState(null);   // 'search' | 'bell' | 'avatar'
     const [q, setQ] = useState('');
     const topRef = useRef(null);
@@ -188,7 +188,7 @@
     const s = CCData.stats;
     const crumbTxt = crumb || (NAVS.find(n => n[0] === active) || [, , 'KONTROL PANELİ'])[2].toUpperCase();
 
-    useEffect(() => { const t = setInterval(() => setNow(n => new Date(n.getTime() + 60000)), 60000); return () => clearInterval(t); }, []);
+    useEffect(() => { const t = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(t); }, []);
     useEffect(() => {
       const onDoc = e => { if (topRef.current && !topRef.current.contains(e.target)) setMenu(null); };
       const onKey = e => {
@@ -310,7 +310,7 @@
           let reasons = [];
           try { reasons = JSON.parse(r.reasons || '[]'); } catch (e) {}
           return {
-            id: r.id, ts: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+            id: r.id, ts: r.created_at ? (r.created_at.includes('Z') || r.created_at.includes('T') ? new Date(r.created_at).getTime() : new Date(r.created_at.replace(' ', 'T') + 'Z').getTime()) : Date.now(),
             pharmacy: r.pharmacy_name || 'Belirtilmemiş', city: '',
             drug: r.drug_name || '—', serial: r.device_serial || '—',
             mkt: r.mkt_value != null ? r.mkt_value : 0, tor: null,

@@ -74,7 +74,7 @@ const AuditTrail = {
 
             return data.data.map(r => ({
                 id: r.id,
-                timestamp: new Date(r.created_at),
+                timestamp: r.created_at ? (r.created_at.includes('Z') || r.created_at.includes('T') ? new Date(r.created_at) : new Date(r.created_at.replace(' ', 'T') + 'Z')) : new Date(),
                 type: r.type,
                 action: r.action,
                 details: r.details,

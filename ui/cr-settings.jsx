@@ -2,6 +2,11 @@
 (function () {
   const { useState } = React;
   const { CCIcons: Ic, CRShell } = window;
+  const getDocDate = () => {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
 
   const SET_CSS = `
   .set-g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;align-items:start;}
@@ -42,6 +47,7 @@
   const MODELS = [['flash15', 'gemini-1.5-flash'], ['flash25', 'gemini-2.5-flash'], ['pro25', 'gemini-2.5-pro']];
 
   function CRSettings({ theme, onNav = () => {} }) {
+    const DOC_DATE = getDocDate();
     const [range, setRange] = useState('cold');
     const [lo, setLo] = useState(2);
     const [hi, setHi] = useState(8);
@@ -166,7 +172,7 @@
         <div className="set-foot">
           <button className="cr-btn"><Ic.save size={15} /> Değişiklikleri kaydet</button>
           <button className="cr-btn cr-btn2" onClick={() => onNav('dashboard')}><Ic.chevL size={15} /> Kontrol Paneli</button>
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--t3)', fontFamily: "'JetBrains Mono', monospace" }}>ColdChain AI · v2.1 · son kayıt 06.06.2026 09:24</span>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--t3)', fontFamily: "'JetBrains Mono', monospace" }}>ColdChain AI · v2.1 · son kayıt {DOC_DATE}</span>
         </div>
       </CRShell>
     );

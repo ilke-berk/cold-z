@@ -36,6 +36,12 @@ describe('SmartParser.buildParser — DMY nokta ayraçlı (TR yaygın)', () => {
         assert.equal(r.tempStr, 5.2);
     });
 
+    test('tam sayı sıcaklıklar (°C birimiyle) doğru parse edilir', () => {
+        const r = parse('06.03.2026 02:11   5 °C   16,6 °C   49 %');
+        assert.ok(r);
+        assert.equal(r.tempStr, 5);
+    });
+
     test('tarih yoksa null', () => {
         assert.equal(parse('sadece text 5,2'), null);
     });
@@ -168,3 +174,18 @@ describe('SmartParser.buildParser — 4 şema arası seçim mantığı simülasy
         assert.equal(r.count, 0);
     });
 });
+
+describe('SmartParser.cleanYearOutliers — Yıl Filtreleme Mantığı', () => {
+    test('çoğunluğa uymayan uzak yılları ayıklar', () => {
+        const mockData = [
+            { timestamp: new Date('2026-03-01 10:00').getTime(), temperature: 5.2 },
+            { timestamp: new Date('2000-01-03 23:55').getTime(), temperature: 3.0 },
+            { timestamp: new Date('2026-03-01 11:00').getTime(), temperature: 5.3 },
+            { timestamp: new Date('2026-03-01 12:00').getTime(), temperature: 5.4 }
+        ];
+        const cleaned = SmartParser.cleanYearOutliers(mockData);
+        assert.equal(cleaned.length, 3);
+        assert.equal(cleaned.some(d => new Date(d.timestamp).getFullYear() === 2000), false);
+    });
+});
+

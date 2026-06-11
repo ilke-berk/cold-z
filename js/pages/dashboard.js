@@ -109,7 +109,7 @@ const DashboardPage = {
                             <div class="activity-content" style="width:100%">
                                 <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                                     <span style="font-weight:600; font-size:0.85rem; color:var(--text-primary)">${a.pharmacy_name || 'Bilinmeyen'}</span>
-                                    <span style="font-size:0.75rem; color:var(--text-tertiary)">${Utils.timeAgo(new Date(a.created_at))}</span>
+                                    <span style="font-size:0.75rem; color:var(--text-tertiary)">${Utils.timeAgo(a.created_at ? (a.created_at.includes('Z') || a.created_at.includes('T') ? new Date(a.created_at) : new Date(a.created_at.replace(' ', 'T') + 'Z')) : new Date())}</span>
                                 </div>
                                 <div style="font-size:0.8rem; color:var(--text-secondary); display:flex; justify-content:space-between">
                                     <span>${a.device_serial || a.drug_name || 'Cihaz İhlali'}</span>
@@ -147,7 +147,7 @@ const DashboardPage = {
                                 ${recentAnalyses.length === 0 ? '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-tertiary)">Henüz kayıtlı analiz bulunmuyor. Yeni bir analiz gerçekleştirdiğinizde burada görüntülenecektir.</td></tr>' :
                     recentAnalyses.map(a => `
                                 <tr onclick="DashboardPage.showAnalysisDetails(${a.id})" style="cursor:pointer; transition:background 0.2s;" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background=''">
-                                    <td>${Utils.formatDateTime(new Date(a.created_at))}</td>
+                                    <td>${Utils.formatDateTime(a.created_at ? (a.created_at.includes('Z') || a.created_at.includes('T') ? new Date(a.created_at) : new Date(a.created_at.replace(' ', 'T') + 'Z')) : new Date())}</td>
                                     <td style="font-weight:600">${a.pharmacy_name || '-'}</td>
                                     <td>${a.drug_name || '-'}</td>
                                     <td><code style="font-size:0.75rem;background:var(--surface-2);padding:2px 6px;border-radius:4px">${a.device_serial || a.batch_number || 'N/A'}</code></td>
@@ -207,7 +207,7 @@ const DashboardPage = {
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:20px;">
                 <div style="background:var(--surface-1); padding:12px; border-radius:8px; border:1px solid var(--surface-border)">
                     <div style="font-size:0.75rem; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px">Kayıt Tarihi</div>
-                    <div style="font-weight:500; color:var(--text-primary)">${Utils.formatDateTime(new Date(analysis.created_at))}</div>
+                     <div style="font-weight:500; color:var(--text-primary)">${Utils.formatDateTime(analysis.created_at ? (analysis.created_at.includes('Z') || analysis.created_at.includes('T') ? new Date(analysis.created_at) : new Date(analysis.created_at.replace(' ', 'T') + 'Z')) : new Date())}</div>
                 </div>
                 <div style="background:var(--surface-1); padding:12px; border-radius:8px; border:1px solid var(--surface-border)">
                     <div style="font-size:0.75rem; color:var(--text-tertiary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px">Nihai Karar</div>

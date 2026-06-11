@@ -48,10 +48,16 @@
     conditional: { c: 'var(--amber)', s: 'var(--amberS)', hex: '#b07d18', bg: '#f7efd9', t1: 'ŞARTLI', sub: 'KOŞULLU KABUL' },
     reject: { c: 'var(--bad)', s: 'var(--badS)', hex: '#cb3c48', bg: '#fae7e8', t1: 'RED', sub: 'İADE REDDEDİLDİ' },
   };
+  const getDocDate = () => {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
   const fmtTRY = n => n.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' });
 
   function CRReport({ theme, onNav = () => {} }) {
     const { useState } = React;
+    const DOC_DATE = getDocDate();
     const stored = (CCStore && CCStore.get()) || null;
     const real = stored && stored.scenario;
     const sc = localStorage.getItem('cc-scenario') || 'accept';
@@ -200,7 +206,7 @@
             <div className="rp-certQr"><Ic.grid size={46} sw={1.2} /></div>
           </div>
           <div className="rp-certMeta">
-            {[['İlaç / Ürün', S.drug], ['Barkod (GTIN)', S.barcode], ['Miad (SKT)', S.expiry], ['Parti / Seri No', S.batch + ' · ' + S.serial], ['Miktar', S.qty + ' Kutu'], ['İade Nedeni', S.reason], ['Eczane / Kurum', S.pharmacy], ['Analiz Tarihi', '06.06.2026 09:24'], ['Onay Tutarı', fmtTRY(S.amount)]].map(([l, v]) => (
+            {[['İlaç / Ürün', S.drug], ['Barkod (GTIN)', S.barcode], ['Miad (SKT)', S.expiry], ['Parti / Seri No', S.batch + ' · ' + S.serial], ['Miktar', S.qty + ' Kutu'], ['İade Nedeni', S.reason], ['Eczane / Kurum', S.pharmacy], ['Analiz Tarihi', DOC_DATE], ['Onay Tutarı', fmtTRY(S.amount)]].map(([l, v]) => (
               <div key={l}><div className="rp-cmL">{l}</div><div className="rp-cmV">{v}</div></div>))}
           </div>
           <div className="rp-certDec" style={{ borderColor: m.hex, background: m.bg }}>
