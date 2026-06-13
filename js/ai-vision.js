@@ -222,7 +222,20 @@ const AIVision = {
                 modelUsed: result.modelUsed || 'Gemini AI',
                 confidence: result.stats?.avgConfidence,
                 lowConfidenceCount: result.stats?.lowConfidenceCount,
-                processingTimeMs: elapsed
+                processingTimeMs: elapsed,
+                // IR belge düzeyi blok — güven skoru postProcess'te hesaplanır
+                extraction: {
+                    sourcePath: 'ocr',
+                    totalCandidates: result.readings.length,
+                    skippedRows: result.readings.length - rawParsedData.length,
+                    removedYearOutliers: 0,
+                    dedupRemoved: result.stats?.dedupRemoved || 0,
+                    aiClaimedTotal: result.stats?.aiClaimedTotal || 0,
+                    claimMismatch: result.stats?.claimMismatch || 0,
+                    lowConfidenceCount: result.stats?.lowConfidenceCount || 0,
+                    dateFormat: result.stats?.dateFormat || null,
+                    forceReview: !!result.stats?.needsReview
+                }
             };
 
             // DataParser'ın ortak post-process mantığını çalıştır
@@ -258,7 +271,8 @@ const AIVision = {
         const data = [];
         console.log(`🧪 AIVision: ${readings.length} ham okuma işleniyor...`);
 
-        for (const r of readings) {
+        for (let i = 0; i < readings.length; i++) {
+            const r = readings[i];
             const ts = this.buildTimestamp(r.date, r.time);
 
             if (!ts || isNaN(ts.getTime())) {
@@ -275,7 +289,9 @@ const AIVision = {
             data.push({
                 timestamp: ts,
                 temperature: parseFloat(temp.toFixed(2)),
-                confidence: r.confidence || 0.9
+                confidence: r.confidence || 0.9,
+                rowIndex: i,
+                rawText: `${r.date} ${r.time} ${r.temperature}`
             });
         }
 

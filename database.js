@@ -1,4 +1,7 @@
-const sqlite3 = require('sqlite3').verbose();
+// sqlite3 native bir bağımlılık; CI testleri onu derlemeden kurar
+// (npm ci --ignore-scripts). Bu modülü require etmek (örn. server.js'i test
+// için import ederken) sqlite3 binding'ini tetiklememeli — bu yüzden sqlite3
+// top-level değil, yalnızca initDB() çağrıldığında (gerçek çalışmada) yüklenir.
 const path = require('path');
 const fs = require('fs');
 
@@ -14,6 +17,7 @@ const dbPath = path.join(userDataPath, 'coldchain.db');
 let db;
 
 function initDB() {
+    const sqlite3 = require('sqlite3').verbose();
     db = new sqlite3.Database(dbPath, (err) => {
         if (err) {
             console.error('[HATA] SQLite baglanti hatasi:', err.message);
@@ -59,6 +63,51 @@ function initDB() {
             else {
                 console.log('[OK] device_serials tablosu hazir.');
                 db.run(`CREATE INDEX IF NOT EXISTS idx_device_serials_serial ON device_serials(serial)`);
+            }
+        });
+
+        // Ham veri saklama (Faz 6): analyses yalniz ozet tutar; normalize
+        // edilmis okuma serisi burada saklanir. Parser iyilestikce eski
+        // belgeler yeniden islenebilir, insan duzeltmeleri egitim/korpus
+        // verisi olarak kullanilabilir.
+        db.run(`
+            CREATE TABLE IF NOT EXISTS analysis_readings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                analysis_id INTEGER NOT NULL,
+                readings TEXT NOT NULL,
+                meta TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `, (err) => {
+            if (err) console.error('[HATA] analysis_readings tablo olusturma hatasi:', err.message);
+            else {
+                console.log('[OK] analysis_readings tablosu hazir.');
+                db.run(`CREATE INDEX IF NOT EXISTS idx_analysis_readings_aid ON analysis_readings(analysis_id)`);
+            }
+        });
+
+        // Sablon hafizasi (Faz 4): belge yapisal parmak izi -> onaylanmis sema.
+        // Ayni logger yazilimi ayni iskeleti bastigi icin fingerprint birebir
+        // tutar; eczaneye ozgu icerik (ad, seri, tarih) parmak izinden dislanir.
+        db.run(`
+            CREATE TABLE IF NOT EXISTS format_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                brand TEXT,
+                producer TEXT,
+                header_tokens TEXT,
+                schema TEXT NOT NULL,
+                source TEXT,
+                use_count INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_used_at DATETIME
+            )
+        `, (err) => {
+            if (err) console.error('[HATA] format_templates tablo olusturma hatasi:', err.message);
+            else {
+                console.log('[OK] format_templates tablosu hazir.');
+                db.run(`CREATE INDEX IF NOT EXISTS idx_format_templates_kind ON format_templates(kind)`);
             }
         });
 
@@ -289,6 +338,156 @@ function recordDeviceSerial({ serial, pharmacy, fileHash, analysisId }) {
     });
 }
 
+// ─── FORMAT SABLON HAFIZASI (Faz 4) ─────────────────────────
+
+function rowToTemplate(r) {
+    if (!r) return null;
+    let headerTokens = [];
+    let schema = null;
+    try { headerTokens = JSON.parse(r.header_tokens || '[]'); } catch (e) {}
+    try { schema = JSON.parse(r.schema); } catch (e) {}
+    return {
+        id: r.id,
+        fingerprint: r.fingerprint,
+        kind: r.kind,
+        brand: r.brand || '',
+        producer: r.producer || '',
+        headerTokens,
+        schema,
+        source: r.source || '',
+        useCount: r.use_count || 0,
+        createdAt: r.created_at,
+        lastUsedAt: r.last_used_at
+    };
+}
+
+function listTemplates(kind = null) {
+    return new Promise((resolve, reject) => {
+        const sql = kind
+            ? `SELECT * FROM format_templates WHERE kind = ? ORDER BY use_count DESC`
+            : `SELECT * FROM format_templates ORDER BY use_count DESC`;
+        const params = kind ? [kind] : [];
+        db.all(sql, params, (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows.map(rowToTemplate));
+        });
+    });
+}
+
+function findTemplateByFingerprint(fingerprint) {
+    return new Promise((resolve, reject) => {
+        db.get(`SELECT * FROM format_templates WHERE fingerprint = ?`, [fingerprint], (err, row) => {
+            if (err) reject(err);
+            else resolve(rowToTemplate(row));
+        });
+    });
+}
+
+/**
+ * Sablon kaydet/guncelle. Ayni fingerprint tekrar gelirse sema ve etiket
+ * tazelenir (kullanici eslestirmeyi duzeltmis olabilir); use_count korunur.
+ */
+function saveTemplate({ fingerprint, kind, brand, producer, headerTokens, schema, source }) {
+    return new Promise((resolve, reject) => {
+        if (!fingerprint || !kind || !schema) {
+            return reject(new Error('fingerprint, kind ve schema zorunlu'));
+        }
+        const tokensJson = JSON.stringify(headerTokens || []);
+        const schemaJson = typeof schema === 'string' ? schema : JSON.stringify(schema);
+        db.get(`SELECT id FROM format_templates WHERE fingerprint = ?`, [fingerprint], (err, row) => {
+            if (err) return reject(err);
+            if (row) {
+                db.run(
+                    `UPDATE format_templates
+                     SET schema = ?, header_tokens = ?, producer = ?, source = ?,
+                         brand = CASE WHEN ? != '' THEN ? ELSE brand END
+                     WHERE id = ?`,
+                    [schemaJson, tokensJson, producer || '', source || '',
+                     brand || '', brand || '', row.id],
+                    (uErr) => uErr ? reject(uErr) : resolve({ id: row.id, updated: true })
+                );
+            } else {
+                db.run(
+                    `INSERT INTO format_templates (fingerprint, kind, brand, producer, header_tokens, schema, source)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                    [fingerprint, kind, brand || '', producer || '', tokensJson, schemaJson, source || ''],
+                    function (iErr) {
+                        if (iErr) reject(iErr);
+                        else resolve({ id: this.lastID, updated: false });
+                    }
+                );
+            }
+        });
+    });
+}
+
+function touchTemplate(id) {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `UPDATE format_templates SET use_count = use_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE id = ?`,
+            [id],
+            (err) => err ? reject(err) : resolve()
+        );
+    });
+}
+
+// ─── HAM OKUMA SERISI (Faz 6) ───────────────────────────────
+
+/**
+ * Normalize edilmis okuma serisini kompakt JSON olarak sakla.
+ * series: [[epochMs, temperature, confidence, humidity?], ...]
+ */
+function saveReadings(analysisId, series, meta) {
+    return new Promise((resolve, reject) => {
+        if (!analysisId || !Array.isArray(series) || series.length === 0) {
+            return reject(new Error('analysisId ve dolu series zorunlu'));
+        }
+        db.run(
+            `INSERT INTO analysis_readings (analysis_id, readings, meta) VALUES (?, ?, ?)`,
+            [analysisId, JSON.stringify(series), JSON.stringify(meta || {})],
+            function (err) {
+                if (err) reject(err);
+                else resolve({ id: this.lastID, count: series.length });
+            }
+        );
+    });
+}
+
+function getReadings(analysisId) {
+    return new Promise((resolve, reject) => {
+        db.get(
+            `SELECT * FROM analysis_readings WHERE analysis_id = ? ORDER BY id DESC LIMIT 1`,
+            [analysisId],
+            (err, row) => {
+                if (err) return reject(err);
+                if (!row) return resolve(null);
+                let series = [];
+                let meta = {};
+                try { series = JSON.parse(row.readings); } catch (e) {}
+                try { meta = JSON.parse(row.meta || '{}'); } catch (e) {}
+                resolve({ analysisId, series, meta, createdAt: row.created_at });
+            }
+        );
+    });
+}
+
+/**
+ * Sablonu sil; audit detayi icin silinen kaydi geri doner.
+ * Bulunamazsa null (404 yerine sessiz no-op degil — cagiran karar verir).
+ */
+function deleteTemplate(id) {
+    return new Promise((resolve, reject) => {
+        db.get(`SELECT * FROM format_templates WHERE id = ?`, [id], (err, row) => {
+            if (err) return reject(err);
+            if (!row) return resolve(null);
+            db.run(`DELETE FROM format_templates WHERE id = ?`, [id], (dErr) => {
+                if (dErr) reject(dErr);
+                else resolve(rowToTemplate(row));
+            });
+        });
+    });
+}
+
 module.exports = {
     initDB,
     saveAnalysis,
@@ -298,5 +497,12 @@ module.exports = {
     getAuditLog,
     verifyAuditChain,
     checkDeviceSerial,
-    recordDeviceSerial
+    recordDeviceSerial,
+    listTemplates,
+    findTemplateByFingerprint,
+    saveTemplate,
+    touchTemplate,
+    deleteTemplate,
+    saveReadings,
+    getReadings
 };

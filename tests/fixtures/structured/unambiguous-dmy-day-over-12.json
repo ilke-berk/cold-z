@@ -1,0 +1,13 @@
+{
+  "name": "GG/AA · gün>12 ile kesin DMY (en tehlikeli sınıfın regresyonu)",
+  "note": "13,14,15,20. günler → format DMY olarak KESİN çözülmeli, MDY'ye kaymamalı. Gün/ay takası bu sistemdeki en tehlikeli hata sınıfı.",
+  "delimiter": ",",
+  "csv": "Tarih,Sıcaklık\n13/03/2026 10:00,4.5\n14/03/2026 10:00,4.6\n15/03/2026 10:00,4.7\n20/03/2026 10:00,4.9",
+  "expected": {
+    "rowCount": 4,
+    "first": { "iso": "2026-03-13T10:00:00", "temp": 4.5 },
+    "last": { "iso": "2026-03-20T10:00:00", "temp": 4.9 },
+    "dateFormat": "DMY",
+    "ambiguous": false
+  }
+}

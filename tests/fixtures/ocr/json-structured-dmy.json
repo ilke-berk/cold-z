@@ -1,0 +1,10 @@
+{
+  "name": "OCR yapılandırılmış JSON · DMY · tam tarih",
+  "mode": "json",
+  "response": "{\"readings\":[{\"date\":\"04.02.2026\",\"time\":\"23:45:00\",\"temperature\":4.6,\"confidence\":0.98},{\"date\":\"05.02.2026\",\"time\":\"00:15:00\",\"temperature\":4.8,\"confidence\":0.97},{\"date\":\"15.02.2026\",\"time\":\"12:00:00\",\"temperature\":5.2,\"confidence\":0.95}],\"pharmacyName\":\"Hayat Eczanesi\",\"deviceBrand\":\"Elitech\",\"totalReadings\":3}",
+  "expected": {
+    "rowCount": 3,
+    "firstISO": "2026-02-04",
+    "dateFormat": "DMY"
+  }
+}

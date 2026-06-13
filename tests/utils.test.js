@@ -103,7 +103,7 @@ describe('Utils.parseTimestamp', () => {
     });
 });
 
-describe('Utils.resolveDateFormat', () => {
+describe('Utils.resolveDateFormat (dedektörsüz — eski varyans yedeği)', () => {
     test('YYYY-MM-DD direkt tanınır', () => {
         const r = Utils.resolveDateFormat(['2024-01-01', '2024-01-02', '2024-01-03']);
         assert.equal(r, 'YYYY-MM-DD');
@@ -118,6 +118,57 @@ describe('Utils.resolveDateFormat', () => {
     test('Az veriyle null döner', () => {
         const r = Utils.resolveDateFormat(['01.01.2024']);
         assert.equal(r, null);
+    });
+});
+
+describe('Utils.resolveDateFormatDetailed — tek çözücü delegasyonu (Faz 2)', () => {
+    // Aynı vm context'e dedektörü de yükleyerek tarayıcı senaryosunu kurarız
+    const ctx = loadBrowserModules(
+        ['../date-format-detector.js', 'utils.js'],
+        ['DateFormatDetector', 'Utils']
+    );
+    const U = ctx.Utils;
+
+    test('dedektör global olarak görünür', () => {
+        assert.ok(ctx.DateFormatDetector);
+        assert.equal(typeof ctx.DateFormatDetector.detect, 'function');
+    });
+
+    test('TR tarihleri (gün > 12) → DMY, oylama, kesin', () => {
+        const r = U.resolveDateFormatDetailed(['15.03.2024 10:30', '16.03.2024 11:30', '17.03.2024 12:30']);
+        assert.equal(r.format, 'DMY');
+        assert.equal(r.formatHint, 'DD.MM.YYYY');
+        assert.equal(r.method, 'voting');
+        assert.equal(r.ambiguous, false);
+    });
+
+    test('US tarihleri → MDY / MM.DD.YYYY ipucu', () => {
+        const r = U.resolveDateFormatDetailed(['03/15/2024', '03/16/2024', '03/17/2024']);
+        assert.equal(r.format, 'MDY');
+        assert.equal(r.formatHint, 'MM.DD.YYYY');
+    });
+
+    test('ISO tarihleri → YMD / YYYY-MM-DD ipucu', () => {
+        const r = U.resolveDateFormatDetailed(['2024-03-15', '2024-03-16', '2024-03-17']);
+        assert.equal(r.format, 'YMD');
+        assert.equal(r.formatHint, 'YYYY-MM-DD');
+    });
+
+    test('tüm günler ≤12 ama ardışık → delta testi DMY çözer', () => {
+        const dates = [];
+        for (let d = 1; d <= 12; d++) dates.push(`${String(d).padStart(2, '0')}.03.2024`);
+        const r = U.resolveDateFormatDetailed(dates);
+        assert.equal(r.format, 'DMY');
+        assert.equal(r.method, 'delta');
+        assert.equal(r.ambiguous, false);
+    });
+
+    test('tek günlük belirsiz veri → DMY varsayılan + ambiguous bayrağı', () => {
+        const r = U.resolveDateFormatDetailed(['05.03.2024', '05.03.2024', '05.03.2024']);
+        assert.equal(r.format, 'DMY');
+        assert.equal(r.ambiguous, true);
+        // Geriye uyumlu sözleşme: belirsizlikte resolveDateFormat null döner
+        assert.equal(U.resolveDateFormat(['05.03.2024', '05.03.2024', '05.03.2024']), null);
     });
 });
 
@@ -141,4 +192,53 @@ describe('Utils.getFileType', () => {
     test('pdf → pdf', () => assert.equal(Utils.getFileType('belge.PDF'), 'pdf'));
     test('jpg → image', () => assert.equal(Utils.getFileType('foto.jpg'), 'image'));
     test('bilinmeyen → other', () => assert.equal(Utils.getFileType('a.xyz'), 'other'));
+});
+
+describe('Utils.sampleRows — baş/orta/son örneklemi (Faz 3 HITL)', () => {
+    const mk = n => Array.from({ length: n }, (_, i) => ({ v: i }));
+
+    test('boş/geçersiz girdi → boş dizi', () => {
+        assert.equal(Utils.sampleRows([]).length, 0);
+        assert.equal(Utils.sampleRows(null).length, 0);
+        assert.equal(Utils.sampleRows(undefined).length, 0);
+    });
+
+    test('n veya daha az satır → hepsi sırayla döner', () => {
+        const out = Utils.sampleRows(mk(7), 10);
+        assert.equal(out.length, 7);
+        assert.equal(JSON.stringify(out.map(s => s.index)), JSON.stringify([0, 1, 2, 3, 4, 5, 6]));
+        assert.equal(out[3].row.v, 3);
+    });
+
+    test('büyük dizide tam n örnek, sıralı ve tekrarsız', () => {
+        const out = Utils.sampleRows(mk(1000), 10);
+        assert.equal(out.length, 10);
+        const idx = out.map(s => s.index);
+        assert.equal(JSON.stringify(idx), JSON.stringify([...idx].sort((a, b) => a - b)));
+        assert.equal(new Set(idx).size, 10);
+    });
+
+    test('baş, orta ve son bölgelerden örnek alır', () => {
+        const out = Utils.sampleRows(mk(1000), 10);
+        const idx = out.map(s => s.index);
+        // baş: ilk 3 satır
+        assert.ok(idx.includes(0) && idx.includes(1) && idx.includes(2));
+        // son: son 3 satır
+        assert.ok(idx.includes(999) && idx.includes(998) && idx.includes(997));
+        // orta: 0.25–0.75 bandından en az bir örnek
+        assert.ok(idx.some(i => i >= 250 && i <= 750), `orta bölge örneklenmedi: ${idx}`);
+    });
+
+    test('index, row ile tutarlı (kaynak satıra geri izlenebilir)', () => {
+        const rows = mk(500);
+        for (const s of Utils.sampleRows(rows, 10)) {
+            assert.equal(s.row, rows[s.index]);
+        }
+    });
+
+    test('sınır: dizi tam n+1 uzunluğunda olsa da tekrarsız n örnek döner', () => {
+        const out = Utils.sampleRows(mk(11), 10);
+        assert.equal(out.length, 10);
+        assert.equal(new Set(out.map(s => s.index)).size, 10);
+    });
 });

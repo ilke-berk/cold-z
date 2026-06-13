@@ -1,7 +1,7 @@
 /* Kontrol Odası — gezinilebilir uygulama (sayfa + tema yönetimi) */
 (function () {
   const { useState, useEffect } = React;
-  const { CCIcons: Ic, CRShell, CRDashboard, CRUpload, CRAnalysis, CRReport, CRSettings, CRLogin } = window;
+  const { CCIcons: Ic, CRShell, CRDashboard, CRUpload, CRAnalysis, CRReport, CRSettings, CRTemplates, CRLogin } = window;
 
   function Placeholder({ theme, active, onNav, label }) {
     return (
@@ -43,6 +43,7 @@
     else if (page === 'upload') body = <CRUpload theme={theme} onNav={setPage} />;
     else if (page === 'analysis') body = <CRAnalysis theme={theme} onNav={setPage} />;
     else if (page === 'report') body = <CRReport theme={theme} onNav={setPage} />;
+    else if (page === 'templates') body = <CRTemplates theme={theme} onNav={setPage} />;
     else if (page === 'settings') body = <CRSettings theme={theme} onNav={setPage} />;
     else body = <Placeholder theme={theme} active={page} onNav={setPage} label={LABELS[page] || 'Ekran'} />;
 

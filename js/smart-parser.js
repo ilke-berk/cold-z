@@ -30,6 +30,7 @@ var SmartParser = (function () {
     return {
         SCHEMA_ENDPOINT: '/api/analyze-schema',
         AI_ENDPOINT: '/api/extract',
+        TEMPLATE_MATCH_ENDPOINT: '/api/templates/match',
         cleanYearOutliers,
 
         async parseSmart(file, onProgress = () => { }, onLog = () => { }, options = {}) {
@@ -59,14 +60,46 @@ var SmartParser = (function () {
 
             let schemaResult = null;
             let schema = options.columnMapping;
+            // Şablon hafızası bilgisi pipeline'dan (UI ön-eşleştirmesi) gelebilir
+            // veya aşağıda burada üretilir — ikisi de aynı IR alanlarına iner.
+            let fingerprint = options.fingerprint || null;
+            let templateUse = options.templateMatch || null;
 
             if (schema) {
                 log('🧠', `Kullanıcı tanımlı PDF şeması yüklendi: ${schema.deviceBrand || 'Tanımsız'}`, 'success');
                 schemaResult = { success: true, schema, cost: { total: 0 } };
             } else {
+                // ─── ADIM 1.5: Şablon Hafızası (Faz 4) ────────────────
+                // Bulanık eşleşme YALNIZCA onay kapısı olan akışta uygulanır
+                // (opts.allowFuzzyTemplate — CCPipeline gönderir): kapısız eski
+                // sayfada bulanık şema sessizce kabul edilmiş olurdu.
+                const tpl = await this.matchKnownTemplate(file, textCheck);
+                if (tpl) {
+                    fingerprint = tpl.fingerprint;
+                    const fuzzyAllowed = tpl.match === 'fuzzy' && options.allowFuzzyTemplate;
+                    if ((tpl.match === 'exact' || fuzzyAllowed) && tpl.template?.schema?.dateOrder) {
+                        schema = tpl.template.schema;
+                        schemaResult = { success: true, schema, cost: { total: 0 } };
+                        templateUse = {
+                            id: tpl.template.id,
+                            brand: tpl.template.brand,
+                            match: tpl.match,
+                            similarity: tpl.similarity || 1,
+                            brandConflict: tpl.brandConflict
+                        };
+                        if (tpl.match === 'exact') {
+                            log('🗂️', `Bilinen format tanındı: ${tpl.template.brand || 'etiketsiz şablon'} → şablon hafızasından anında parse (AI maliyeti 0).`, 'success');
+                        } else {
+                            log('🗂️', `Benzer format şablonu önerildi: ${tpl.template.brand || '#' + tpl.template.id} (%${Math.round((tpl.similarity || 0) * 100)} benzer) — sessizce uygulanmaz, insan onayına düşecek.`, 'warning');
+                        }
+                    }
+                }
+            }
+
+            if (!schema) {
                 // ─── ADIM 2: Hızlı Tanıma (Heuristic) ─────────────────
                 log('⚡', 'Hızlı tanıma motoru çalıştırılıyor...');
-                const fastResult = await this.tryHeuristicParse(file, onProgress, log);
+                const fastResult = await this.tryHeuristicParse(file, onProgress, log, fingerprint);
                 if (fastResult) {
                     log('⚡', 'Bilinen şablon ile anında çözüldü.', 'success');
                     return fastResult;
@@ -75,7 +108,7 @@ var SmartParser = (function () {
                 // ─── ADIM 3: AI Schema Learning (v4.0) ──────────────
                 onProgress(10);
                 const bestPages = await this.findBestSchemaPages(file);
-                
+
                 for (let i = 0; i < Math.min(2, bestPages.length); i++) {
                     const page = bestPages[i];
                     log('🧠', `AI Sayfa ${page} yapısını öğreniyor...`);
@@ -86,6 +119,18 @@ var SmartParser = (function () {
                         log('🧠', `Format Öğrenildi: ${schema.deviceBrand || 'Tanımsız'} (${schema.dateOrder} düzeni)`, 'success');
                         break;
                     }
+                }
+            }
+
+            // Şablon kaynaklı zorunlu inceleme nedenleri: bulanık eşleşme asla
+            // sessizce kabul edilmez; marka çelişkisi anlaşmazlık yönlendirmesidir.
+            const reviewReasons = [];
+            if (templateUse) {
+                if (templateUse.match === 'fuzzy') {
+                    reviewReasons.push(`Önerilen şablon "${templateUse.brand || '#' + templateUse.id}" (%${Math.round((templateUse.similarity || 0) * 100)} benzer) ile parse edildi — onaylanırsa bu belge yeni format varyantı olarak hafızaya kaydedilir.`);
+                }
+                if (templateUse.brandConflict) {
+                    reviewReasons.push(`Marka çelişkisi: belgede "${(fingerprint && fingerprint.brandDetected) || '?'}" markası görünürken eşleşen şablon "${templateUse.brand}" etiketli — çıkarımı kontrol edin.`);
                 }
             }
 
@@ -105,6 +150,12 @@ var SmartParser = (function () {
             }
 
             log('✅', `Hasat başarılı: ${harvestResult.data.length} kayıt yakalandı`, 'success');
+            if (harvestResult.dateDetection?.ambiguous) {
+                log('📅', `Tarih formatı kesin tespit edilemedi (yöntem: ${harvestResult.dateDetection.method}) → TR varsayılanı GG.AA.YYYY kullanıldı.`, 'warning');
+            }
+            if (harvestResult.removedYearOutliers > 0) {
+                log('🧹', `${harvestResult.removedYearOutliers} satır, çoğunluk yılının ±1 dışında kaldığı için elendi (tarih okuma hatası olabilir).`, 'warning');
+            }
 
             // ─── ADIM 5: Post-Process ────────────────────────────
             onProgress(90);
@@ -115,10 +166,30 @@ var SmartParser = (function () {
                 docCreationDate: textCheck.docCreationDate,
                 extractionMethod: 'universal-reader-v4',
                 aiCost: schemaResult.cost?.total || 0,
-                schema: schema
+                removedYearOutliers: harvestResult.removedYearOutliers || 0,
+                schema: schema,
+                // IR belge düzeyi blok — güven skoru postProcess'te hesaplanır
+                extraction: {
+                    sourcePath: 'pdf-digital',
+                    schema: schema,
+                    totalCandidates: harvestResult.totalCandidates,
+                    skippedRows: harvestResult.tsFailures,
+                    removedYearOutliers: harvestResult.removedYearOutliers || 0,
+                    dateFormat: harvestResult.dateDetection,
+                    // Şablon hafızası (Faz 4): parmak izi analiz sonrası kayıt
+                    // için, template bilgi/zorunlu inceleme kapı için taşınır.
+                    fingerprint: fingerprint || undefined,
+                    template: templateUse || undefined,
+                    forceReview: reviewReasons.length > 0 || undefined,
+                    reviewReasons: reviewReasons.length > 0 ? reviewReasons : undefined
+                }
             };
 
             const processed = DataParser.postProcess(harvestResult.data, [], metadata, { resampling: false });
+            const conf = processed.metadata.extraction?.confidence;
+            if (conf) {
+                log('🎯', `Güven skoru: ${conf.score}/100${conf.needsReview ? ' — insan incelemesi önerilir' : ''}`, conf.needsReview ? 'warning' : 'success');
+            }
             log('📊', `Tamamlandı: ${processed.data.length} ölçüm çıkarıldı.`, 'success');
             onProgress(100);
 
@@ -135,7 +206,9 @@ var SmartParser = (function () {
 
         buildParser(schema) {
             const esc = c => ({ '.': '\\.', '-': '\\-', '/': '\\/', ',': ',', ' ': '\\s' }[c] || '\\.');
-            const ds = '[.,/\\-\\s]'; 
+            // Şemada ayraç belirtilmişse (AI keşfi veya kullanıcı seçimi) ona sadık kal;
+            // belirtilmemişse tüm yaygın ayraçları kabul et.
+            const ds = schema.dateSep ? esc(schema.dateSep) : '[.,/\\-\\s]';
             const ts = schema.timeSep ? esc(schema.timeSep) : '[:.]';
             const dec = schema.decimalSep ? esc(schema.decimalSep) : '[.,]';
             const order = schema.dateOrder || 'dmy';
@@ -201,14 +274,15 @@ var SmartParser = (function () {
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
             const data = [];
             const parseLine = this.buildParser(schema);
+            let lineCounter = 0;
 
             for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
                 const page = await pdf.getPage(pageNum);
                 const textContent = await page.getTextContent();
-                const items = textContent.items.map(item => ({ 
-                    str: item.str, 
-                    x: item.transform[4], 
-                    y: item.transform[5] 
+                const items = textContent.items.map(item => ({
+                    str: item.str,
+                    x: item.transform[4],
+                    y: item.transform[5]
                 }));
 
                 items.sort((a, b) => b.y - a.y);
@@ -218,36 +292,78 @@ var SmartParser = (function () {
                     const lineStr = lineItems.map(i => i.str).join(" ");
                     const parsed = parseLine(lineStr);
                     if (parsed) {
+                        parsed.raw = lineStr;
+                        parsed.rowIndex = lineCounter;
                         data.push(parsed);
                     }
+                    lineCounter++;
                 }
             }
 
-            const resolvedFormat = Utils.resolveDateFormat(data.map(d => d.dateStr)) || 'DD/MM/YYYY';
+            // Tek tarih çözücü: şema yanlış dateOrder verdiyse normalize edilmiş
+            // tarihlerdeki tutarsızlığı burada yakalarız (oylama + delta testi).
+            const dateDetection = Utils.resolveDateFormatDetailed(data.map(d => d.dateStr));
+            const resolvedFormat = dateDetection.formatHint || 'DD/MM/YYYY';
             const finalData = [];
+            let tsFailures = 0;
             for (const item of data) {
                 const ts = Utils.parseTimestamp(item.dateStr, item.timeStr, resolvedFormat);
-                if (ts) finalData.push({ timestamp: ts, temperature: item.tempStr });
+                if (ts) {
+                    // IR satır şekli: deterministik hasat → confidence 1
+                    finalData.push({ timestamp: ts, temperature: item.tempStr, confidence: 1, rowIndex: item.rowIndex, rawText: item.raw });
+                } else {
+                    tsFailures++;
+                }
             }
             // Kronolojik sıralama
             finalData.sort((a, b) => a.timestamp - b.timestamp);
             const cleanedData = cleanYearOutliers(finalData);
-            return { data: cleanedData, resolvedFormat };
+            return {
+                data: cleanedData,
+                resolvedFormat,
+                dateDetection,
+                totalCandidates: data.length,
+                tsFailures,
+                removedYearOutliers: finalData.length - cleanedData.length
+            };
         },
 
-        async tryHeuristicParse(file, onProgress, log) {
+        async tryHeuristicParse(file, onProgress, log, fingerprint = null) {
             try {
                 const arrayBuffer = await file.arrayBuffer();
                 const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                 const page = await pdf.getPage(1);
                 const textContent = await page.getTextContent();
                 const fullText = textContent.items.map(i => i.str).join(' ');
-                
+
                 if (fullText.includes('Tarih - Saat') || fullText.includes('Dolap °C')) {
                     const schema = { dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: ',', tempColIndex: 0 };
                     const res = await this.harvestWithDeterministicParser(file, schema);
                     if (res.data.length > 0) {
-                        return { source: file.name, method: 'heuristic-v4', parsedData: res.data, rowCount: res.data.length, metadata: { deviceBrand: 'Clogger/Tufan' }, pageCount: pdf.numPages };
+                        // Heuristik yol da ortak IR hattından geçer (sıralama + dedup +
+                        // validasyon + güven skoru) — diğer yollarla aynı çıktı şekli.
+                        const metadata = {
+                            deviceBrand: 'Clogger/Tufan',
+                            extractionMethod: 'heuristic-v4',
+                            removedYearOutliers: res.removedYearOutliers || 0,
+                            extraction: {
+                                sourcePath: 'pdf-heuristic',
+                                schema: schema,
+                                totalCandidates: res.totalCandidates,
+                                skippedRows: res.tsFailures,
+                                removedYearOutliers: res.removedYearOutliers || 0,
+                                dateFormat: res.dateDetection,
+                                // Parmak izi taşınırsa belge analiz sonrası şablon
+                                // hafızasına yazılır → sonraki kopyalar 'exact' yoldan gider.
+                                fingerprint: fingerprint || undefined
+                            }
+                        };
+                        const processed = DataParser.postProcess(res.data, [], metadata, { resampling: false });
+                        const conf = processed.metadata.extraction?.confidence;
+                        if (conf && log) {
+                            log('🎯', `Güven skoru: ${conf.score}/100${conf.needsReview ? ' — insan incelemesi önerilir' : ''}`, conf.needsReview ? 'warning' : 'success');
+                        }
+                        return { source: file.name, method: 'heuristic-v4', parsedData: processed.data, rowCount: processed.data.length, metadata: processed.metadata, pageCount: pdf.numPages };
                     }
                 }
             } catch (e) {} return null;
@@ -262,13 +378,67 @@ var SmartParser = (function () {
                 const metaData = await pdf.getMetadata();
                 const fullText = textContent.items.map(i => i.str).join(' ');
                 const serialMatch = fullText.match(/(?:S\/N|Seri No|Serial|Cihaz No|Logger ID|ID|No)\s*[:=]?\s*([A-Z0-9-]{5,20})/i);
+                // Şablon hafızası (Faz 4) sayfa-1 satırlarına ve PDF üretici
+                // alanlarına ihtiyaç duyar — parmak izi bunlardan üretilir.
+                const items = textContent.items.map(item => ({
+                    str: item.str, x: item.transform[4], y: item.transform[5]
+                }));
+                items.sort((a, b) => b.y - a.y);
+                const page1Lines = Utils.groupLines(items).map(line => line.map(i => i.str).join(' '));
                 return {
                     itemCount: textContent.items.length,
                     pageCount: pdf.numPages,
                     docCreationDate: metaData?.info?.CreationDate,
+                    producer: metaData?.info?.Producer || '',
+                    creator: metaData?.info?.Creator || '',
+                    page1Lines,
+                    page1Text: fullText,
                     deviceSerial: serialMatch ? serialMatch[1].trim() : null
                 };
             } catch (e) { return { itemCount: 0, pageCount: 1 }; }
+        },
+
+        /**
+         * Şablon hafızası sorgusu (Faz 4). Marka tespit edilmez, TANINIR:
+         * anahtar belgenin yapısal parmak izi; sayfa-1'deki marka kelimesi
+         * yalnızca yardımcı sinyal (etiket ön-doldurma + çapraz doğrulama +
+         * bulanık adayları daraltma). Sunucu kapalıysa null döner ve akış
+         * normal yoldan (heuristik → AI keşfi) devam eder.
+         */
+        async matchKnownTemplate(file, textCheck = null) {
+            if (typeof FormatFingerprint === 'undefined') return null;
+            try {
+                const check = textCheck || await this.checkDigitalContent(file);
+                if (!check.page1Lines || !check.page1Lines.length) return null;
+                const fingerprint = await FormatFingerprint.pdfFingerprint({
+                    lines: check.page1Lines,
+                    producer: check.producer,
+                    creator: check.creator
+                });
+                fingerprint.brandDetected = FormatFingerprint.detectBrand(check.page1Text || check.page1Lines.join(' '));
+                const resp = await fetch(this.TEMPLATE_MATCH_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        fingerprint: fingerprint.hash,
+                        headerTokens: fingerprint.headerTokens,
+                        producer: fingerprint.producer,
+                        kind: 'pdf',
+                        brandHint: fingerprint.brandDetected
+                    })
+                });
+                const m = await resp.json();
+                if (!m || !m.success) return { fingerprint, match: 'none' };
+                return {
+                    fingerprint,
+                    match: m.match,
+                    template: m.template,
+                    similarity: m.similarity,
+                    brandConflict: !!m.brandConflict
+                };
+            } catch (e) {
+                return null;
+            }
         },
 
         async findBestSchemaPages(file) {
@@ -303,14 +473,58 @@ var SmartParser = (function () {
             const response = await fetch(this.AI_ENDPOINT, { method: 'POST', body: formData });
             const result = await response.json();
             if (result.success) {
-                const parsedData = result.readings.map(r => ({ timestamp: new Date(r.date + ' ' + r.time).getTime(), temperature: r.temperature }));
+                // OCR çıktısı da ortak IR'a iner: Date timestamp + satır güveni +
+                // kaynak metin; ardından diğer yollarla aynı postProcess hattı.
+                const parsedData = result.readings
+                    .map((r, i) => ({
+                        timestamp: new Date(r.date + ' ' + r.time),
+                        temperature: r.temperature,
+                        confidence: typeof r.confidence === 'number' ? r.confidence : 0.9,
+                        rowIndex: i,
+                        rawText: `${r.date} ${r.time} ${r.temperature}`,
+                        // Kademe 2 inceleme ızgarası: satırın kaynak sayfası (yaklaşık,
+                        // chunk başlangıcı) — düşük güvenli satır, sayfa görüntüsüyle
+                        // yan yana gösterilir.
+                        page: r.page || 1
+                    }))
+                    .filter(d => !isNaN(d.timestamp.getTime()));
+                const tsFailures = result.readings.length - parsedData.length;
                 const cleanedData = cleanYearOutliers(parsedData);
+                const removedYearOutliers = parsedData.length - cleanedData.length;
+                if (removedYearOutliers > 0) {
+                    onLog({ icon: '🧹', message: `${removedYearOutliers} satır, çoğunluk yılının ±1 dışında kaldığı için elendi (OCR tarih hatası olabilir).`, status: 'warning' });
+                }
+
+                const metadata = {
+                    ...result.metadata,
+                    removedYearOutliers,
+                    extractionMethod: 'full-ai-ocr-v4',
+                    aiStats: result.stats,
+                    extraction: {
+                        sourcePath: 'ocr',
+                        totalCandidates: result.readings.length,
+                        skippedRows: tsFailures,
+                        removedYearOutliers,
+                        dedupRemoved: result.stats?.dedupRemoved || 0,
+                        aiClaimedTotal: result.stats?.aiClaimedTotal || 0,
+                        claimMismatch: result.stats?.claimMismatch || 0,
+                        lowConfidenceCount: result.stats?.lowConfidenceCount || 0,
+                        dateFormat: result.stats?.dateFormat || null,
+                        forceReview: !!result.stats?.needsReview
+                    }
+                };
+                const processed = DataParser.postProcess(cleanedData, [], metadata, { resampling: false });
+                const conf = processed.metadata.extraction?.confidence;
+                if (conf) {
+                    onLog({ icon: '🎯', message: `Güven skoru: ${conf.score}/100${conf.needsReview ? ' — insan incelemesi önerilir' : ''}`, status: conf.needsReview ? 'warning' : 'success' });
+                }
+
                 return {
                     source: file.name,
                     method: 'full-ai-ocr-v4',
-                    parsedData: cleanedData,
-                    rowCount: cleanedData.length,
-                    metadata: result.metadata,
+                    parsedData: processed.data,
+                    rowCount: processed.data.length,
+                    metadata: processed.metadata,
                     cost: result.stats?.cost || 0
                 };
             }
@@ -336,9 +550,13 @@ var SmartParser = (function () {
             for (const schema of trialSchemas) {
                 const parseLine = this.buildParser(schema);
                 const hits = [];
-                for (const line of lines) {
-                    const p = parseLine(line);
-                    if (p) hits.push(p);
+                for (let li = 0; li < lines.length; li++) {
+                    const p = parseLine(lines[li]);
+                    if (p) {
+                        p.raw = lines[li];
+                        p.rowIndex = li;
+                        hits.push(p);
+                    }
                 }
                 if (hits.length > best.count) {
                     best = { count: hits.length, data: hits, schema };
@@ -353,21 +571,48 @@ var SmartParser = (function () {
             log('✅', `${best.count} satır yakalandı (format: ${best.schema.dateOrder}, ayraç: "${best.schema.dateSep}")`, 'success');
             onProgress(70);
 
-            const resolvedFormat = Utils.resolveDateFormat(best.data.map(d => d.dateStr)) || 'DD/MM/YYYY';
+            // Tek tarih çözücü: normalize edilmiş tarihler üzerinde format doğrulaması
+            const dateDetection = Utils.resolveDateFormatDetailed(best.data.map(d => d.dateStr));
+            const resolvedFormat = dateDetection.formatHint || 'DD/MM/YYYY';
+            if (dateDetection.ambiguous) {
+                log('📅', `Tarih formatı kesin tespit edilemedi (yöntem: ${dateDetection.method}) → TR varsayılanı GG.AA.YYYY kullanıldı.`, 'warning');
+            }
             const finalData = [];
+            let tsFailures = 0;
             for (const item of best.data) {
                 const ts = Utils.parseTimestamp(item.dateStr, item.timeStr, resolvedFormat);
-                if (ts) finalData.push({ timestamp: ts, temperature: item.tempStr });
+                if (ts) {
+                    finalData.push({ timestamp: ts, temperature: item.tempStr, confidence: 1, rowIndex: item.rowIndex, rawText: item.raw });
+                } else {
+                    tsFailures++;
+                }
             }
             finalData.sort((a, b) => a.timestamp - b.timestamp);
             const cleanedData = cleanYearOutliers(finalData);
+            const removedYearOutliers = finalData.length - cleanedData.length;
+            if (removedYearOutliers > 0) {
+                log('🧹', `${removedYearOutliers} satır, çoğunluk yılının ±1 dışında kaldığı için elendi.`, 'warning');
+            }
 
             const metadata = {
                 deviceBrand: 'Metin Dosyası',
                 extractionMethod: 'text-parser-v4',
-                schema: best.schema
+                removedYearOutliers,
+                schema: best.schema,
+                extraction: {
+                    sourcePath: 'text',
+                    schema: best.schema,
+                    totalCandidates: best.count,
+                    skippedRows: tsFailures,
+                    removedYearOutliers,
+                    dateFormat: dateDetection
+                }
             };
             const processed = DataParser.postProcess(cleanedData, [], metadata, { resampling: false });
+            const conf = processed.metadata.extraction?.confidence;
+            if (conf) {
+                log('🎯', `Güven skoru: ${conf.score}/100${conf.needsReview ? ' — insan incelemesi önerilir' : ''}`, conf.needsReview ? 'warning' : 'success');
+            }
             onProgress(100);
 
             return {
