@@ -1,4 +1,7 @@
-const sqlite3 = require('sqlite3').verbose();
+// sqlite3 native bir bağımlılık; CI testleri onu derlemeden kurar
+// (npm ci --ignore-scripts). Bu modülü require etmek (örn. server.js'i test
+// için import ederken) sqlite3 binding'ini tetiklememeli — bu yüzden sqlite3
+// top-level değil, yalnızca initDB() çağrıldığında (gerçek çalışmada) yüklenir.
 const path = require('path');
 const fs = require('fs');
 
@@ -14,6 +17,7 @@ const dbPath = path.join(userDataPath, 'coldchain.db');
 let db;
 
 function initDB() {
+    const sqlite3 = require('sqlite3').verbose();
     db = new sqlite3.Database(dbPath, (err) => {
         if (err) {
             console.error('[HATA] SQLite baglanti hatasi:', err.message);
