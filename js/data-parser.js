@@ -23,6 +23,32 @@ const DataParser = {
         const onProgress = options.onProgress || (() => { });
         let rawData;
 
+        // --- ADIM 0: CSV/TSV önce yapısal yoldan denenir ---
+        // Sütun eşleştirme UI'ının seçimi yalnızca standardize() içinde okunur;
+        // SmartParser'ın regex yolu columnMapping'i yok sayar. Bu yüzden CSV/TSV
+        // Excel ile aynı yapısal hattan gider; regex yalnızca yapısal okuma
+        // başarısız olursa (başlıksız / serbest metin dosyaları) devreye girer.
+        if (['csv', 'tsv'].includes(ext)) {
+            try {
+                rawData = await this.readCSV(file);
+                if (!rawData || !rawData.rows.length) throw new Error('Dosya boş veya okunamadı');
+                const result = await this.standardize(rawData, brand, { ...options, sourcePath: 'csv' });
+                return {
+                    source: file.name,
+                    brand,
+                    rawData: rawData.rows,
+                    parsedData: result.data,
+                    rowCount: result.data.length,
+                    columns: rawData.headers,
+                    metadata: result.metadata,
+                    pipeline: result.pipelineLog
+                };
+            } catch (err) {
+                console.warn(`⚠️ ${file.name}: yapısal CSV okuma başarısız (${err.message}) → metin parser deneniyor`);
+                rawData = null;
+            }
+        }
+
         // --- ADIM 1 & 2: Görsel veya taranmış PDF ise Smart Hybrid v2 AI Modelini Çağır ---
         // (Not: Smart Hybrid kendi içerisinde %100 Native Grid Extraction barındırır, ekstra readPDFText'e gerek yoktur)
         const aiExtensions = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'pdf', 'txt', 'csv', 'tsv', 'log', 'dat'];
@@ -75,7 +101,7 @@ const DataParser = {
         }
 
         // Pipeline çalıştır
-        const result = this.standardize(rawData, brand, options);
+        const result = await this.standardize(rawData, brand, { ...options, sourcePath: ext === 'csv' ? 'csv' : 'excel' });
 
         return {
             source: file.name,
@@ -182,15 +208,68 @@ const DataParser = {
                 try {
                     const data = new Uint8Array(e.target.result);
                     const wb = XLSX.read(data, { type: 'array', cellDates: true });
-                    const sheet = wb.Sheets[wb.SheetNames[0]];
-                    const rows = XLSX.utils.sheet_to_json(sheet, { raw: false, defval: '' });
-                    if (!rows.length) { reject(new Error('Excel dosyası boş')); return; }
-                    resolve({ headers: Object.keys(rows[0]), rows });
+
+                    // Tüm sayfaları değerlendir; logger ihracatlarında veri tablosu
+                    // ilk sayfada olmayabilir → en çok veri satırı içeren sayfa seçilir.
+                    let best = null;
+                    for (const sheetName of wb.SheetNames) {
+                        const sheet = wb.Sheets[sheetName];
+                        const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+                        if (!grid.length) continue;
+
+                        // Başlık satırı her zaman 1. satır değildir: tablonun üstünde
+                        // meta blok (cihaz adı, seri no, limitler) olabilir.
+                        const headerIdx = this.findHeaderRow(grid);
+                        const headers = grid[headerIdx].map((h, i) => String(h ?? '').trim() || `Sütun ${i + 1}`);
+                        const rows = grid.slice(headerIdx + 1)
+                            .filter(r => r.some(c => String(c ?? '').trim() !== ''))
+                            .map(r => {
+                                const obj = {};
+                                headers.forEach((h, i) => { obj[h] = r[i] ?? ''; });
+                                return obj;
+                            });
+
+                        if (!best || rows.length > best.rows.length) {
+                            best = { headers, rows, sheetName, headerRow: headerIdx + 1 };
+                        }
+                    }
+
+                    if (!best || !best.rows.length) { reject(new Error('Excel dosyası boş')); return; }
+                    resolve(best);
                 } catch (err) { reject(err); }
             };
             reader.onerror = () => reject(new Error('Dosya okunamadı'));
             reader.readAsArrayBuffer(file);
         });
+    },
+
+    /**
+     * İlk N satırı tarayıp "başlığa en çok benzeyen" satırı seçer.
+     * Başlık satırı: çok sayıda dolu hücre + bilinen sütun adları + sayısal olmayan içerik.
+     */
+    findHeaderRow(grid) {
+        const keywords = [
+            'tarih', 'date', 'saat', 'time', 'zaman', 'timestamp', 'datetime',
+            'sıcaklık', 'sicaklik', 'temp', 'celsius', '°c', 'nem', 'humidity',
+            'ch1', 'ch 1', 'probe', 'sensor', 'değer', 'deger', 'value', 'reading', 'durum', 'status'
+        ];
+        const maxScan = Math.min(grid.length, 20);
+        let bestIdx = 0;
+        let bestScore = -Infinity;
+
+        for (let i = 0; i < maxScan; i++) {
+            const cells = (grid[i] || []).map(c => String(c ?? '').trim()).filter(c => c !== '');
+            if (cells.length < 2) continue; // meta satırları genelde 1-2 hücre
+
+            let score = cells.length;
+            const lower = cells.map(c => c.toLowerCase());
+            score += lower.filter(c => keywords.some(k => c.includes(k))).length * 10;
+            // Veri satırları sayı/tarih/saat doludur; başlık hücreleri metin olur
+            score -= cells.filter(c => /^[-+]?[\d.,:\/\s-]+$/.test(c)).length * 4;
+
+            if (score > bestScore) { bestScore = score; bestIdx = i; }
+        }
+        return bestIdx;
     },
 
     async readCSV(file) {
@@ -239,6 +318,12 @@ const DataParser = {
             throw new Error('Sıcaklık sütunu bulunamadı. Sütunlar: ' + headers.join(', '));
         }
 
+        if (!colMap.dateCol) {
+            // Tarihsiz veri uydurmak (örn. tüm satırlara "şimdi" atamak) analizi
+            // sessizce yanlışlatır; bunun yerine kullanıcıdan eşleştirme istenir.
+            throw new Error('Tarih sütunu bulunamadı. Lütfen sütun eşleştirme panelinden tarih sütununu seçin. Sütunlar: ' + headers.join(', '));
+        }
+
         // --- ADIM 3: Meta Bilgi Çıkarımı ---
         const metadata = this.extractMetadata(rows, headers, colMap);
         log.push({
@@ -246,13 +331,18 @@ const DataParser = {
             message: `Meta bilgi: ${metadata.pharmacyName ? 'Eczane: ' + metadata.pharmacyName : ''} ${metadata.deviceSerial ? '| Cihaz: ' + metadata.deviceSerial : ''}`.trim()
         });
 
-        // --- ADIM 3.5: Tarih Format Tespiti (Kullanıcı Mantığı) ---
+        // --- ADIM 3.5: Tarih Format Tespiti (tek çözücü: date-format-detector) ---
         let resolvedFormat = null;
+        let dateDetection = null;
         if (colMap.dateCol) {
             const samples = rows.slice(0, 200).map(r => String(r[colMap.dateCol] || '').trim()).filter(s => s.length > 5);
-            resolvedFormat = Utils.resolveDateFormat(samples);
-            if (resolvedFormat) {
-                log.push({ step: 'date_resolution', message: `Tarih formatı günlük değişime göre tespit edildi: ${resolvedFormat}`, icon: '📅' });
+            dateDetection = Utils.resolveDateFormatDetailed(samples);
+            if (dateDetection.ambiguous) {
+                // Belirsizlikte parseDate zaten DMY varsayar; bayrak güven skoruna iner.
+                log.push({ step: 'date_resolution', message: `Tarih formatı kesin tespit edilemedi (yöntem: ${dateDetection.method}) → TR varsayılanı GG.AA.YYYY kullanılacak`, icon: '📅', status: 'warning' });
+            } else {
+                resolvedFormat = dateDetection.formatHint;
+                log.push({ step: 'date_resolution', message: `Tarih formatı tespit edildi: ${resolvedFormat} (yöntem: ${dateDetection.method}, güven %${Math.round(dateDetection.confidence * 100)})`, icon: '📅' });
             }
         }
 
@@ -277,9 +367,13 @@ const DataParser = {
                 continue;
             }
 
+            // IR satır şekli: {timestamp, temperature, humidity?, confidence, rowIndex}
+            // (yapısal yolda hücreler deterministik okunur → confidence 1)
             const entry = {
                 timestamp: ts,
-                temperature: parseFloat(temp.toFixed(2))
+                temperature: parseFloat(temp.toFixed(2)),
+                confidence: 1,
+                rowIndex: i
             };
 
             // Nem varsa ekle
@@ -297,6 +391,27 @@ const DataParser = {
             step: 'parsing',
             message: `${rows.length} satırdan ${data.length} geçerli kayıt çıkarıldı. ${skipped} satır atlandı.`
         });
+
+        // Şablon hafızası (Faz 4): sütun imzasından deterministik parmak izi.
+        // Analiz tamamlanınca bu imza + onaylı eşleştirme şablon olarak kaydedilir;
+        // aynı imzalı sonraki dosyalar eşleştirmeyi hazır bulur.
+        let fingerprint = options.fingerprint || null;
+        if (!fingerprint && typeof FormatFingerprint !== 'undefined') {
+            try { fingerprint = await FormatFingerprint.tabularFingerprint(headers); } catch (e) {}
+        }
+
+        // IR belge düzeyi blok: kaynak yol, şema, kayıp sayıları, tarih-format güveni.
+        // postProcess bu sinyallerden tek güven skorunu hesaplar.
+        metadata.extraction = {
+            sourcePath: options.sourcePath || 'structured',
+            schema: colMap,
+            totalCandidates: rows.length,
+            skippedRows: skipped,
+            removedYearOutliers: 0,
+            dateFormat: dateDetection,
+            fingerprint: fingerprint || undefined,
+            template: options.templateMatch || undefined
+        };
 
         // ADIM 6-10: Sıralama, Deduplikasyon, Validasyon ve Resampling
         return this.postProcess(data, log, metadata, options);
@@ -341,6 +456,29 @@ const DataParser = {
                 if (d.temperature < -50 || d.temperature > 60) {
                     d._outlier = true;
                 }
+            });
+        }
+
+        // --- ADIM 8.5: Güven Skoru (IR doğrulayıcısı, Faz 2) ---
+        // Resampling'den ÖNCE hesaplanır: resampling bilinçli seyreltmedir,
+        // çıkarım kalitesi kaybı değildir.
+        if (metadata && metadata.extraction && typeof ConfidenceScore !== 'undefined') {
+            const ext = metadata.extraction;
+            ext.dedupRemoved = (ext.dedupRemoved || 0) + dupCount;
+            ext.parsedRows = data.length;
+            ext.confidence = ConfidenceScore.compute({
+                ...ext,
+                temperatures: data.map(d => d.temperature),
+                rowConfidences: data.map(d => (typeof d.confidence === 'number' ? d.confidence : 1))
+            });
+            const c = ext.confidence;
+            log.push({
+                step: 'Güven Skoru',
+                message: c.needsReview
+                    ? `Çıkarım güven skoru ${c.score}/100 — insan incelemesi önerilir (${c.factors.map(f => f.detail).join('; ') || 'eşik altı'})`
+                    : `Çıkarım güven skoru ${c.score}/100 — otomatik devam için yeterli.`,
+                icon: '🎯',
+                status: c.needsReview ? 'warning' : 'success'
             });
         }
 
@@ -553,8 +691,8 @@ const DataParser = {
             return this.parseDateAndTime(dateVal, timeVal, formatHint);
         }
 
-        // Durum 3: Hiç tarih sütunu yoksa → sıra numarasına göre
-        return new Date();
+        // Durum 3: Hiç tarih sütunu yok → timestamp uydurma, satırı geçersiz say
+        return null;
     },
 
     parseDateAndTime(dateStr, timeStr, formatHint = null) {

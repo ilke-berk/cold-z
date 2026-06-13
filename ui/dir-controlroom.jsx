@@ -162,7 +162,7 @@
   .cr-empty{padding:26px 16px;text-align:center;font-size:12px;color:var(--t3);}
   `;
 
-  const NAVS = [['dashboard', 'grid', 'Kontrol Paneli'], ['upload', 'upload', 'Veri Yükleme'], ['analysis', 'activity', 'Analiz & Karar'], ['report', 'report', 'Rapor'], ['settings', 'cog', 'Ayarlar']];
+  const NAVS = [['dashboard', 'grid', 'Kontrol Paneli'], ['upload', 'upload', 'Veri Yükleme'], ['analysis', 'activity', 'Analiz & Karar'], ['report', 'report', 'Rapor'], ['templates', 'box', 'Şablon Hafızası'], ['settings', 'cog', 'Ayarlar']];
 
   const NOTIFS = [
     { ic: 'alert', tone: 'bad', t: 'MKT ihlali — Şifa Eczanesi', d: 'Cihaz NN-3344-B 11,8°C pik yaptı · iade reddi önerildi', ago: '4 dk önce', unread: true },

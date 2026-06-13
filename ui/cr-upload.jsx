@@ -1,6 +1,6 @@
 /* Veri Yükleme sayfası — GERÇEK dosya yükleme + analiz pipeline'ı (Kontrol Odası dili) */
 (function () {
-  const { useState, useRef } = React;
+  const { useState, useRef, useEffect } = React;
   const { CCIcons: Ic, CRShell, CCStore, CCPipeline } = window;
 
   const UP_CSS = `
@@ -71,6 +71,36 @@
   .up-previewTbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:11px;font-family:'JetBrains Mono',monospace;}
   .up-previewTbl th{text-align:left;color:var(--t3);padding:4px 6px;background:var(--pn);border-bottom:1px solid var(--ln2);font-size:10px;}
   .up-previewTbl td{padding:4px 6px;color:var(--t2);border-bottom:1px solid var(--ln);}
+  /* HITL onay kapısı (Faz 3) */
+  .up-rev{border-top:2px solid var(--amber);background:var(--amberS);}
+  .up-revHead{display:flex;align-items:center;gap:11px;padding:13px 18px;border-bottom:1px solid var(--ln);}
+  .up-revTitle{font-size:13px;font-weight:700;color:var(--amber);}
+  .up-revSub{font-size:11px;color:var(--t2);margin-top:2px;line-height:1.45;}
+  .up-revItem{padding:13px 18px;border-bottom:1px solid var(--ln);}
+  .up-revRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .up-revName{font-size:12.5px;font-weight:600;}
+  .up-revScore{font-size:10.5px;font-family:'JetBrains Mono',monospace;font-weight:700;padding:3px 8px;border-radius:6px;border:1px solid var(--amber);color:var(--amber);background:var(--pn);}
+  .up-revScore.ok{border-color:var(--ok);color:var(--ok);}
+  .up-revFactors{margin:8px 0 0;padding:0 0 0 16px;font-size:11px;color:var(--t2);line-height:1.6;}
+  .up-revBtn{margin-left:auto;}
+  .up-revDone{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;color:var(--ok);margin-left:auto;}
+  /* Satır inceleme ızgarası (Faz 5 / Kademe 2) */
+  .up-lcWrap{display:grid;grid-template-columns:1.25fr 1fr;gap:14px;margin-top:12px;align-items:start;}
+  .up-lcWrap.noimg{grid-template-columns:1fr;}
+  .up-lcTitle{font-size:10px;text-transform:uppercase;color:var(--amber);font-weight:700;letter-spacing:.4px;margin-bottom:6px;display:flex;align-items:center;gap:6px;}
+  .up-lcTbl{width:100%;border-collapse:collapse;font-size:11px;font-family:'JetBrains Mono',monospace;}
+  .up-lcTbl th{text-align:left;color:var(--t3);padding:4px 6px;background:var(--pn);border-bottom:1px solid var(--ln2);font-size:9.5px;white-space:nowrap;}
+  .up-lcTbl td{padding:3px 6px;color:var(--t2);border-bottom:1px solid var(--ln);vertical-align:middle;}
+  .up-lcTbl tr.exc td{opacity:.38;text-decoration:line-through;}
+  .up-lcConf{font-weight:700;padding:1px 6px;border-radius:4px;border:1px solid var(--amber);color:var(--amber);font-size:9.5px;}
+  .up-lcInput{width:64px;background:var(--pn);border:1px solid var(--ln2);border-radius:5px;color:var(--tx);padding:3px 6px;font-size:11px;font-family:'JetBrains Mono',monospace;outline:none;}
+  .up-lcInput:focus{border-color:var(--sig);}
+  .up-lcInput.edited{border-color:var(--ok);color:var(--ok);}
+  .up-lcExc{width:22px;height:22px;border-radius:5px;border:1px solid var(--ln2);background:transparent;display:grid;place-items:center;color:var(--t3);cursor:pointer;}
+  .up-lcExc:hover,.up-lcExc.on{color:var(--bad);border-color:var(--bad);}
+  .up-lcImg{border:1px solid var(--ln2);border-radius:8px;overflow:hidden;background:var(--pn);position:sticky;top:8px;}
+  .up-lcImg img{display:block;width:100%;height:auto;}
+  .up-lcImgLbl{font-size:9.5px;color:var(--t3);padding:5px 9px;border-top:1px solid var(--ln);font-family:'JetBrains Mono',monospace;}
   `;
 
   const RANGES = {
@@ -102,6 +132,22 @@
     return 'excel';
   }
   function fmtSize(bytes) { return (window.Utils && Utils.formatFileSize) ? Utils.formatFileSize(bytes) : (bytes / 1024).toFixed(0) + ' KB'; }
+
+  // Kademe 2: düşük güvenli satırın kaynak sayfasını görüntüye çevir.
+  // pdfjs zaten yüklü — ek bağımlılık yok. Görseller için doğrudan objectURL.
+  async function renderSourceImage(file, kind, pageNum) {
+    if (kind === 'image') return URL.createObjectURL(file);
+    if (kind !== 'pdf' || typeof pdfjsLib === 'undefined') return null;
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    const p = Math.min(Math.max(1, pageNum || 1), pdf.numPages);
+    const page = await pdf.getPage(p);
+    const viewport = page.getViewport({ scale: 1.3 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    return canvas.toDataURL('image/jpeg', 0.82);
+  }
   let seq = 0;
 
   function CRUpload({ theme, onNav = () => {} }) {
@@ -118,6 +164,70 @@
     const [result, setResult] = useState(null);  // {rowCount, mkt, tor, decision, label}
     const [error, setError] = useState(null);
     const [step, setStep] = useState(1);
+    // HITL onay kapısı (Faz 3): düşük güvenli çıkarımlar onaylanana dek analiz kilitli.
+    const [review, setReview] = useState(null);      // null | [{id,name,score,threshold,factors,sample,rowCount}]
+    const [approvals, setApprovals] = useState({});  // {fileId: true}
+    // Şablon hafızası (Faz 4 / Kademe 3): onayda "formatı hatırla" seçimi.
+    // Varsayılan açık; false ise o dosyanın şablonu kaydedilmez.
+    const [remember, setRemember] = useState({});    // {fileId: false}
+    // Satır inceleme ızgarası (Faz 5 / Kademe 2): düşük güvenli satır düzeltmeleri.
+    const [rowEdits, setRowEdits] = useState({});    // {fileId: {idx: {temp, exclude}}}
+    const [pageImgs, setPageImgs] = useState({});    // {fileId: {url, page}}
+    const parseCacheRef = useRef({});                // ikinci koşuda AI/parse maliyetini sıfırlar
+
+    // İnceleme açıldığında düşük güvenli satırların kaynak sayfasını render et
+    // (dosya başına bir görüntü: ilk düşük güvenli satırın sayfası).
+    useEffect(() => {
+      if (!review) return;
+      let cancelled = false;
+      (async () => {
+        for (const rev of review) {
+          if (!rev.lowConfRows || !rev.lowConfRows.length) continue;
+          if (pageImgs[rev.id]) continue;
+          const fl = files.find(x => x.id === rev.id);
+          if (!fl || (fl.kind !== 'pdf' && fl.kind !== 'image')) continue;
+          try {
+            const page = rev.lowConfRows.find(r => r.page)?.page || 1;
+            const url = await renderSourceImage(fl.file, fl.kind, page);
+            if (url && !cancelled) setPageImgs(s => ({ ...s, [rev.id]: { url, page: fl.kind === 'pdf' ? page : null } }));
+          } catch (e) { /* görüntü olmadan da ızgara çalışır */ }
+        }
+      })();
+      return () => { cancelled = true; };
+    }, [review]);
+
+    // Düzeltmeleri önbellekteki parse sonucuna uygula: analiz, düzeltilmiş
+    // değerlerle koşar; her düzeltme audit'e yazılır (çağıran yapar).
+    const applyRowEdits = (fileId) => {
+      const edits = rowEdits[fileId];
+      const cache = parseCacheRef.current[fileId];
+      if (!edits || !cache || !cache.res || !cache.res.parsedData) return { changed: 0, excluded: 0, details: [] };
+      const data = cache.res.parsedData;
+      let changed = 0, excluded = 0;
+      const details = [];
+      Object.entries(edits).forEach(([idx, e]) => {
+        const row = data[Number(idx)];
+        if (!row) return;
+        if (e.exclude) {
+          row._excluded = true; excluded++;
+          details.push(`#${Number(idx) + 1} çıkarıldı (${row.temperature}°C)`);
+        } else if (e.temp !== undefined && String(e.temp).trim() !== '') {
+          const nv = parseFloat(String(e.temp).replace(',', '.'));
+          if (!isNaN(nv) && nv !== row.temperature) {
+            details.push(`#${Number(idx) + 1}: ${row.temperature} → ${nv}°C`);
+            row.temperature = nv;
+            row.confidence = 1;
+            row._humanEdited = true;
+            changed++;
+          }
+        }
+      });
+      if (excluded > 0) {
+        cache.res.parsedData = data.filter(r => !r._excluded);
+        cache.res.rowCount = cache.res.parsedData.length;
+      }
+      return { changed, excluded, details };
+    };
 
     const canAdvance = () => {
       if (step === 1) return files.length > 0;
@@ -138,45 +248,100 @@
         } else if (ext === 'csv') {
           rawData = await DataParser.readCSV(file);
         } else if (ext === 'pdf') {
-          // PDF: Arka planda AI ile şema tespiti yap
+          // PDF: önce şablon hafızası (Faz 4) — bilinen format AI'sız anında
+          // çözülür; bulanık eşleşme önerilir ama onay kapısına düşer.
           setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Şema öğreniliyor...' } : f));
-          const res = await SmartParser.discoverSchema(file, 1);
-          if (res.success && res.schema) {
-            const schema = res.schema;
+          let schema = null, fingerprint = null, templateMatch = null, statusText = 'Şema hazır';
+          const tpl = SmartParser.matchKnownTemplate ? await SmartParser.matchKnownTemplate(file) : null;
+          if (tpl) fingerprint = tpl.fingerprint || null;
+          if (tpl && (tpl.match === 'exact' || tpl.match === 'fuzzy') && tpl.template && tpl.template.schema && tpl.template.schema.dateOrder) {
+            schema = tpl.template.schema;
+            templateMatch = {
+              id: tpl.template.id,
+              brand: tpl.template.brand,
+              match: tpl.match,
+              similarity: tpl.similarity || 1,
+              brandConflict: !!tpl.brandConflict
+            };
+            statusText = tpl.match === 'exact'
+              ? `Bilinen format: ${tpl.template.brand || 'şablon #' + tpl.template.id} (AI maliyeti 0)`
+              : `Önerilen şablon: ${tpl.template.brand || '#' + tpl.template.id} (%${Math.round((tpl.similarity || 0) * 100)} benzer) — onay gerekecek`;
+          } else {
+            const res = await SmartParser.discoverSchema(file, 1);
+            if (res.success && res.schema) schema = res.schema;
+          }
+          if (schema) {
             // Tarayıcı tarafında hızlı re-parse
             setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Numune toplanıyor...' } : f));
             const harvest = await SmartParser.harvestWithDeterministicParser(file, schema);
-            const previewRows = (harvest.data || []).slice(0, 3).map(r => ({
-              date: Utils.formatDateTime(r.timestamp),
-              temp: r.temperature
+            // Baş/orta/son örneklemi: tarih kayması en çok ay sınırlarında belli olur
+            const previewRows = Utils.sampleRows(harvest.data || [], 10).map(s => ({
+              index: s.index,
+              date: Utils.formatDateTime(s.row.timestamp),
+              temp: s.row.temperature
             }));
-            
+
             setFiles(current => current.map(f => f.id === fileObj.id ? {
               ...f,
               rows: previewRows,
-              status: 'Şema hazır',
+              status: statusText,
+              fingerprint,
+              templateMatch,
               columnMapping: {
                 dateOrder: schema.dateOrder || 'dmy',
                 dateSep: schema.dateSep || '.',
                 timeSep: schema.timeSep || ':',
                 decimalSep: schema.decimalSep || ',',
                 tempColIndex: schema.tempColIndex ?? 0,
-                deviceBrand: schema.deviceBrand || 'Otomatik',
+                deviceBrand: schema.deviceBrand || (templateMatch && templateMatch.brand) || 'Otomatik',
                 deviceSerial: schema.deviceSerial || ''
               }
             } : f));
           } else {
-            setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Hazır (Otomatik AI)' } : f));
+            setFiles(current => current.map(f => f.id === fileObj.id ? { ...f, status: 'Hazır (Otomatik AI)', fingerprint } : f));
           }
           return;
         }
         
         if (rawData && rawData.headers && rawData.headers.length) {
           const mapping = await DataParser.detectColumns(rawData.headers, rawData.rows);
+
+          // Faz 4: şablon hafızası — sütun imzası daha önce onaylanmış bir
+          // eşleştirmeyle birebir tutuyorsa kayıtlı eşleştirme kullanılır
+          // (kesin hash eşleşmesi tam otomatiktir); bulanık benzerlik yalnızca
+          // bilgi olarak gösterilir, sessizce uygulanmaz.
+          let fingerprint = null, templateMatch = null, statusText = null;
+          if (window.FormatFingerprint) {
+            try {
+              fingerprint = await FormatFingerprint.tabularFingerprint(rawData.headers);
+              const r = await fetch('/api/templates/match', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fingerprint: fingerprint.hash, headerTokens: fingerprint.headerTokens, kind: 'tabular' })
+              });
+              const j = await r.json();
+              if (j && j.success && j.match === 'exact' && j.template && j.template.schema) {
+                const t = j.template.schema;
+                if (rawData.headers.includes(t.dateCol) && rawData.headers.includes(t.tempCol)) {
+                  mapping.dateCol = t.dateCol;
+                  mapping.timeCol = t.timeCol && rawData.headers.includes(t.timeCol) ? t.timeCol : '';
+                  mapping.tempCol = t.tempCol;
+                  mapping.humidityCol = t.humidityCol && rawData.headers.includes(t.humidityCol) ? t.humidityCol : '';
+                  templateMatch = { id: j.template.id, brand: j.template.brand, match: 'exact', similarity: 1 };
+                  statusText = `Bilinen format: ${j.template.brand || 'şablon #' + j.template.id}`;
+                }
+              } else if (j && j.success && j.match === 'fuzzy' && j.template) {
+                statusText = `Önerilen şablon: ${j.template.brand || '#' + j.template.id} (%${Math.round((j.similarity || 0) * 100)} benzer) — eşleştirmeyi kontrol edin`;
+              }
+            } catch (e) { /* sunucu kapalıysa otomatik tespitle devam */ }
+          }
+
           setFiles(current => current.map(f => f.id === fileObj.id ? {
             ...f,
             headers: rawData.headers,
-            rows: rawData.rows.slice(0, 3),
+            rows: Utils.sampleRows(rawData.rows, 10).map(s => s.row),
+            fingerprint,
+            templateMatch,
+            ...(statusText ? { status: statusText } : {}),
             columnMapping: {
               dateCol: mapping.dateCol || rawData.headers[0] || '',
               timeCol: mapping.timeCol || '__same__',
@@ -193,7 +358,16 @@
 
     const updateFileMapping = async (fileId, key, value) => {
       let updatedFile = null;
-      
+
+      // Eşleştirme değişti → eski parse sonucu ve verilmiş onay artık geçersiz.
+      delete parseCacheRef.current[fileId];
+      setApprovals(a => {
+        if (!a[fileId]) return a;
+        const next = { ...a };
+        delete next[fileId];
+        return next;
+      });
+
       setFiles(current => {
         return current.map(f => {
           if (f.id === fileId) {
@@ -201,7 +375,9 @@
               ...f.columnMapping,
               [key]: value
             };
-            updatedFile = { ...f, columnMapping: nextMapping };
+            // Eşleştirme elle değiştirildi → artık şablon değil kullanıcı tanımı;
+            // parmak izi korunur (onay sonrası yeni varyant olarak kaydedilebilir).
+            updatedFile = { ...f, columnMapping: nextMapping, templateMatch: null };
             return updatedFile;
           }
           return f;
@@ -213,9 +389,10 @@
         try {
           setFiles(current => current.map(f => f.id === fileId ? { ...f, status: 'Güncelleniyor...' } : f));
           const harvest = await SmartParser.harvestWithDeterministicParser(updatedFile.file, updatedFile.columnMapping);
-          const previewRows = (harvest.data || []).slice(0, 3).map(r => ({
-            date: Utils.formatDateTime(r.timestamp),
-            temp: r.temperature
+          const previewRows = Utils.sampleRows(harvest.data || [], 10).map(s => ({
+            index: s.index,
+            date: Utils.formatDateTime(s.row.timestamp),
+            temp: s.row.temperature
           }));
           setFiles(current => current.map(f => f.id === fileId ? { ...f, rows: previewRows, status: 'Şema güncellendi' } : f));
         } catch (e) {
@@ -240,7 +417,7 @@
     const addFiles = (fileList) => {
       const arr = Array.from(fileList || []);
       if (!arr.length) return;
-      setError(null); setResult(null); setPipe([]);
+      setError(null); setResult(null); setPipe([]); setReview(null);
       const newFiles = arr.map(file => {
         const kind = detectKind(file.name);
         return { 
@@ -267,17 +444,30 @@
         }
       });
     };
-    const removeFile = id => setFiles(f => f.filter(x => x.id !== id));
+    const removeFile = id => {
+      delete parseCacheRef.current[id];
+      setApprovals(a => { const n = { ...a }; delete n[id]; return n; });
+      setRemember(r => { const n = { ...r }; delete n[id]; return n; });
+      setRowEdits(r => { const n = { ...r }; delete n[id]; return n; });
+      setPageImgs(r => { const n = { ...r }; delete n[id]; return n; });
+      setReview(r => {
+        if (!r) return r;
+        const rest = r.filter(x => x.id !== id);
+        return rest.length ? rest : null;
+      });
+      setFiles(f => f.filter(x => x.id !== id));
+    };
 
     const onRange = v => { setRange(v); const r = RANGES[v]; setLimits(l => ({ ...l, lo: r.min, hi: r.max })); };
 
-    const runAnalysis = async () => {
+    const runAnalysis = async (approvalsOverride) => {
       if (running) return;
       if (!files.length) { setError('Önce en az bir dosya yükleyin.'); return; }
       setRunning(true); setResult(null); setError(null); setPipe([]);
       // ilerleme çubuklarını sıfırla
       setFiles(f => f.map(x => ({ ...x, prog: 0, status: x.ai ? 'Smart bekliyor' : 'Hazır', done: false, error: false })));
 
+      const effectiveApprovals = approvalsOverride || approvals;
       const cfg = { lowerLimit: limits.lo, upperLimit: limits.hi, torLimit: limits.tor };
       try {
         const out = await CCPipeline.run(
@@ -291,14 +481,36 @@
                 cleanMapping.humidityCol = '';
               }
             }
-            return { id: f.id, file: f.file, columnMapping: cleanMapping };
+            return {
+              id: f.id, file: f.file, columnMapping: cleanMapping,
+              fingerprint: f.fingerprint || null,
+              templateMatch: f.templateMatch || null,
+            };
           }),
           form, cfg,
           {
             onStep: (s) => setPipe(p => [...p, s]),
             onFile: (id, pct, status, isErr) => setFiles(f => f.map(x => x.id === id ? { ...x, prog: Math.round(pct), status, done: pct >= 100 && !isErr, error: !!isErr } : x)),
+          },
+          {
+            approvedIds: Object.keys(effectiveApprovals).filter(id => effectiveApprovals[id]),
+            parseCache: parseCacheRef.current,
+            // "formatı hatırla" kapatılan dosyalar şablon hafızasına yazılmaz
+            templateOptOut: Object.keys(remember).reduce((acc, id) => {
+              if (remember[id] === false) acc[id] = true;
+              return acc;
+            }, {}),
           }
         );
+        if (out.needsReview) {
+          // Onay kapısı: analiz durdu, parse sonuçları önbellekte. Kullanıcı
+          // genişletilmiş önizlemeyi onaylayana dek ANALİZİ BAŞLAT kilitli kalır.
+          parseCacheRef.current = out.parseCache || parseCacheRef.current;
+          setReview(out.reviews);
+          setRunning(false);
+          return;
+        }
+        setReview(null);
         CCStore.set({ scenario: out.scenario, record: serializeRecord(out.record), savedId: null });
         setResult({ rowCount: out.rowCount, mkt: out.mkt, tor: out.tor, decision: out.decision.decision, label: (window.CCPipeline, out.scenario.label) });
         setRunning(false);
@@ -308,12 +520,43 @@
       }
     };
 
+    // Tek bir düşük güvenli belgeyi onayla; hepsi onaylanınca analiz otomatik sürer.
+    const approveReview = (rev) => {
+      // Kademe 2: bekleyen satır düzeltmeleri önce parse önbelleğine uygulanır,
+      // ayrı bir audit kaydıyla izlenir (operatör kim neyi değiştirdi).
+      const ed = applyRowEdits(rev.id);
+      if (ed.changed > 0 || ed.excluded > 0) {
+        CCPipeline.postAudit({
+          type: 'review',
+          action: 'Düşük güvenli satırlar elle düzeltildi (HITL Kademe 2)',
+          details: `${rev.name} · ${ed.changed} satır düzeltildi, ${ed.excluded} satır çıkarıldı · ${ed.details.slice(0, 12).join('; ')}${ed.details.length > 12 ? ' …' : ''}`,
+          tags: ['hitl', 'satır-düzeltme'],
+        });
+      }
+      const next = { ...approvals, [rev.id]: true };
+      setApprovals(next);
+      // GDP/TİTCK izlenebilirliği: onay, hash-zincirli audit log'a yazılır.
+      CCPipeline.postAudit({
+        type: 'review',
+        action: 'Düşük güvenli çıkarım insan onayından geçti',
+        details: `${rev.name} · skor ${rev.score === null ? '—' : rev.score + '/' + 100} (eşik ${rev.threshold}) · ${rev.rowCount} kayıt`
+          + (ed.changed || ed.excluded ? ` · ${ed.changed} düzeltme, ${ed.excluded} çıkarma` : '')
+          + ` · nedenler: ${(rev.factors || []).map(x => x.detail).join('; ') || '—'}`,
+        tags: ['hitl', 'onay'],
+      });
+      const allApproved = (review || []).every(r => next[r.id]);
+      if (allApproved) {
+        setReview(null);
+        runAnalysis(next);
+      }
+    };
+
     // record içindeki Date alanlarını JSON-uyumlu hale getir (kaydetme için saklanır)
     function serializeRecord(r) {
       try { return JSON.parse(JSON.stringify(r)); } catch (e) { return r; }
     }
 
-    const clearAll = () => { setFiles([]); setPipe([]); setResult(null); setError(null); };
+    const clearAll = () => { setFiles([]); setPipe([]); setResult(null); setError(null); setReview(null); setApprovals({}); setRemember({}); setRowEdits({}); setPageImgs({}); parseCacheRef.current = {}; };
 
     const acList = form.drug ? FORMULARY.filter(d => d.toUpperCase().includes(form.drug.toUpperCase())).slice(0, 8) : [];
     const PIPE_TOTAL = 6;
@@ -431,7 +674,7 @@
                             {/* Veri Önizleme */}
                             {f.rows && f.rows.length > 0 && (
                               <div style={{ marginTop: 10, overflowX: 'auto' }}>
-                                <div className="up-mapLabel" style={{ marginBottom: 4 }}>Veri Önizleme (İlk {f.rows.length} Satır)</div>
+                                <div className="up-mapLabel" style={{ marginBottom: 4 }}>Veri Önizleme — Baş/Orta/Son Örneklemi ({f.rows.length} Satır)</div>
                                 <table className="up-previewTbl">
                                   <thead>
                                     <tr>
@@ -509,7 +752,7 @@
                             {/* Veri Önizleme */}
                             {f.rows && f.rows.length > 0 && (
                               <div style={{ marginTop: 10, overflowX: 'auto' }}>
-                                <div className="up-mapLabel" style={{ marginBottom: 4 }}>PDF Okuma Numunesi (İlk {f.rows.length} Kayıt)</div>
+                                <div className="up-mapLabel" style={{ marginBottom: 4 }}>PDF Okuma Numunesi — Baş/Orta/Son Örneklemi ({f.rows.length} Kayıt)</div>
                                 <table className="up-previewTbl">
                                   <thead>
                                     <tr>
@@ -635,6 +878,139 @@
                 )}
               </div>
             )}
+
+            {/* HITL onay kapısı (Faz 3): düşük güvenli çıkarım, insan onayı olmadan analize giremez */}
+            {review && review.length > 0 && (
+              <div className="cr-pn up-rev" style={{ overflow: 'hidden' }}>
+                <div className="up-revHead">
+                  <div className="up-stepIc" style={{ color: 'var(--amber)', background: 'var(--pn)' }}><Ic.alert size={16} /></div>
+                  <div>
+                    <div className="up-revTitle">İNSAN ONAYI GEREKLİ — ANALİZ BEKLETİLİYOR</div>
+                    <div className="up-revSub">
+                      Aşağıdaki belgelerde çıkarım güveni eşiğin altında veya tarih formatı belirsiz.
+                      Örneklem belgenin <b>başından, ortasından ve sonundan</b> alınmıştır — tarih sırası, gün/ay düzeni ve
+                      sıcaklık değerlerinin makul olduğunu kontrol edin. Gerekirse 1. adımdan sütun eşleştirmeyi düzeltin.
+                      Her onay denetim kaydına (audit log) yazılır.
+                    </div>
+                  </div>
+                </div>
+                {review.map(rev => {
+                  const ok = !!approvals[rev.id];
+                  return (
+                    <div key={rev.id} className="up-revItem">
+                      <div className="up-revRow">
+                        <span className="up-revName">{rev.name}</span>
+                        <span className={'up-revScore' + (ok ? ' ok' : '')}>GÜVEN {rev.score === null ? '—' : rev.score + '/100'} · EŞİK {rev.threshold}</span>
+                        <span style={{ fontSize: 10.5, color: 'var(--t3)', fontFamily: "'JetBrains Mono',monospace" }}>{rev.rowCount} KAYIT</span>
+                        {ok ? (
+                          <span className="up-revDone"><Ic.check size={14} sw={3} /> ONAYLANDI</span>
+                        ) : (
+                          <button className="cr-btn up-revBtn" style={{ padding: '7px 14px' }} onClick={() => approveReview(rev)}>
+                            <Ic.check size={14} sw={2.4} /> İNCELEDİM, ONAYLIYORUM
+                          </button>
+                        )}
+                      </div>
+                      {rev.factors && rev.factors.length > 0 && (
+                        <ul className="up-revFactors">
+                          {rev.factors.map((fa, i) => <li key={i}>{fa.detail} {fa.deduction > 0 && <span style={{ color: 'var(--t3)' }}>(−{fa.deduction} puan)</span>}</li>)}
+                        </ul>
+                      )}
+                      {/* Şablon hafızası (Faz 4 / Kademe 3): öğreten onay */}
+                      {(() => {
+                        const fl = files.find(x => x.id === rev.id);
+                        const canRemember = fl && fl.fingerprint && (!fl.templateMatch || fl.templateMatch.match !== 'exact');
+                        if (!canRemember || ok) return null;
+                        return (
+                          <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 9, fontSize: 11.5, color: 'var(--t2)', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={remember[rev.id] !== false}
+                              onChange={e => setRemember(s => ({ ...s, [rev.id]: e.target.checked }))} />
+                            Bu cihaz formatını hatırla — aynı düzendeki sonraki belgeler AI'sız, anında çözülür
+                          </label>
+                        );
+                      })()}
+                      {/* Satır inceleme ızgarası (Faz 5 / Kademe 2): yalnızca işaretli
+                          satırlar doğrulanır, belgenin tamamı değil. */}
+                      {!ok && rev.lowConfRows && rev.lowConfRows.length > 0 && (
+                        <div className={'up-lcWrap' + (pageImgs[rev.id] ? '' : ' noimg')}>
+                          <div>
+                            <div className="up-lcTitle"><Ic.alert size={12} sw={2.4} /> DÜŞÜK GÜVENLİ SATIRLAR ({rev.lowConfRows.length}) — DEĞERİ KAYNAKLA KARŞILAŞTIRIP GEREKİRSE DÜZELTİN</div>
+                            <div style={{ overflowX: 'auto', maxHeight: 320, overflowY: 'auto' }}>
+                              <table className="up-lcTbl">
+                                <thead>
+                                  <tr><th>#</th><th>Tarih & Saat</th><th>Okunan</th><th>Güven</th><th>Düzeltme (°C)</th><th>Ham Satır</th><th title="Satırı analizden çıkar">Çıkar</th></tr>
+                                </thead>
+                                <tbody>
+                                  {rev.lowConfRows.map(lr => {
+                                    const e = (rowEdits[rev.id] || {})[lr.idx] || {};
+                                    return (
+                                      <tr key={lr.idx} className={e.exclude ? 'exc' : ''}>
+                                        <td style={{ color: 'var(--t3)' }}>{lr.idx + 1}</td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>{lr.date}</td>
+                                        <td>{lr.temp}°C</td>
+                                        <td><span className="up-lcConf">{Math.round(lr.conf * 100)}%</span></td>
+                                        <td>
+                                          <input className={'up-lcInput' + (e.temp !== undefined && String(e.temp).trim() !== '' ? ' edited' : '')}
+                                            placeholder={String(lr.temp)} value={e.temp !== undefined ? e.temp : ''}
+                                            disabled={!!e.exclude}
+                                            onChange={ev => setRowEdits(s => ({ ...s, [rev.id]: { ...(s[rev.id] || {}), [lr.idx]: { ...e, temp: ev.target.value } } }))} />
+                                        </td>
+                                        <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lr.raw || '—'}</td>
+                                        <td>
+                                          <button className={'up-lcExc' + (e.exclude ? ' on' : '')} title={e.exclude ? 'Geri al' : 'Satırı analizden çıkar'}
+                                            onClick={() => setRowEdits(s => ({ ...s, [rev.id]: { ...(s[rev.id] || {}), [lr.idx]: { ...e, exclude: !e.exclude } } }))}>
+                                            <Ic.x size={11} sw={2.4} />
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.5 }}>
+                              Düzeltmeler onayla birlikte uygulanır ve denetim kaydına (audit log) operatör düzeltmesi olarak yazılır.
+                            </div>
+                          </div>
+                          {pageImgs[rev.id] && (
+                            <div className="up-lcImg">
+                              <img src={pageImgs[rev.id].url} alt="Kaynak sayfa" />
+                              <div className="up-lcImgLbl">
+                                KAYNAK GÖRÜNTÜ{pageImgs[rev.id].page ? ` · SAYFA ~${pageImgs[rev.id].page}` : ''} — okunan değerleri buradan doğrulayın
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {rev.sample && rev.sample.length > 0 && (
+                        <div style={{ marginTop: 10, overflowX: 'auto' }}>
+                          <div className="up-mapLabel" style={{ marginBottom: 4 }}>Baş / Orta / Son Örneklemi ({rev.sample.length} kayıt)</div>
+                          <table className="up-previewTbl">
+                            <thead>
+                              <tr>
+                                <th>#</th>
+                                <th>Tarih & Saat</th>
+                                <th>Sıcaklık</th>
+                                <th>Kaynak Satır (ham)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rev.sample.map((s, i) => (
+                                <tr key={i}>
+                                  <td style={{ color: 'var(--t3)' }}>{s.index + 1}</td>
+                                  <td>{s.date}</td>
+                                  <td>{s.temp}°C</td>
+                                  <td style={{ maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.raw || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -651,11 +1027,16 @@
             <button className="cr-btn" onClick={goNext} disabled={!canAdvance()}>
               İleri <Ic.chevR size={14} />
             </button>
-          ) : (
-            <button className="cr-btn" onClick={runAnalysis} disabled={running || !files.length} style={{ opacity: running ? .7 : 1 }}>
-              {running ? <span className="up-spin" /> : <Ic.activity size={15} sw={2.2} />} {running ? 'ANALİZ EDİLİYOR…' : 'ANALİZİ BAŞLAT'}
-            </button>
-          )}
+          ) : (() => {
+            // Zorunlu onay kapısı: bekleyen inceleme varken analiz başlatılamaz.
+            const pendingReview = review ? review.filter(r => !approvals[r.id]).length : 0;
+            return (
+              <button className="cr-btn" onClick={() => runAnalysis()} disabled={running || !files.length || pendingReview > 0} style={{ opacity: running || pendingReview > 0 ? .7 : 1 }}>
+                {running ? <span className="up-spin" /> : pendingReview > 0 ? <Ic.alert size={15} sw={2.2} /> : <Ic.activity size={15} sw={2.2} />}
+                {running ? 'ANALİZ EDİLİYOR…' : pendingReview > 0 ? `ONAY BEKLENİYOR (${pendingReview})` : 'ANALİZİ BAŞLAT'}
+              </button>
+            );
+          })()}
         </div>
       </CRShell>
     );

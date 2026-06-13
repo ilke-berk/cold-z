@@ -175,6 +175,72 @@ describe('SmartParser.buildParser — 4 şema arası seçim mantığı simülasy
     });
 });
 
+describe('SmartParser.buildParser — dateSep şemaya sadık (kozmetik değil)', () => {
+    test('schema dateSep "/" iken nokta ayraçlı tarih yakalanmaz', () => {
+        const parse = SmartParser.buildParser({
+            dateOrder: 'dmy', dateSep: '/', timeSep: ':', decimalSep: ',', tempColIndex: 0
+        });
+        assert.equal(parse('15.03.2024 10:30 5,2'), null);
+        const r = parse('15/03/2024 10:30 5,2');
+        assert.ok(r);
+        assert.equal(r.dateStr, '15/03/2024');
+    });
+
+    test('dateSep verilmezse tüm yaygın ayraçlar kabul edilir', () => {
+        const parse = SmartParser.buildParser({ dateOrder: 'dmy', tempColIndex: 0 });
+        assert.ok(parse('15.03.2024 10:30 5,2'));
+        assert.ok(parse('15/03/2024 10:30 5.2'));
+    });
+});
+
+describe('SmartParser.parseTextFile — uçtan uca IR hattı (Faz 2)', () => {
+    // Metin yolu artık ortak IR'a iner: dedektör + güven skoru + postProcess.
+    // pdfjsLib gerekmez; file.text() mock'lanır.
+    const full = loadBrowserModules(
+        ['../date-format-detector.js', 'confidence.js', 'utils.js', 'data-parser.js', 'smart-parser.js'],
+        ['DateFormatDetector', 'ConfidenceScore', 'Utils', 'DataParser', 'SmartParser']
+    );
+    const SP = full.SmartParser;
+
+    function mockFile(content, name = 'veri.txt') {
+        return { name, text: async () => content };
+    }
+
+    test('TR metin dosyası: IR satırları + extraction bloğu + güven skoru', async () => {
+        const lines = ['# Logger Çıktısı'];
+        for (let d = 13; d <= 24; d++) lines.push(`${d}.03.2024 10:30 5,2`);
+        const result = await SP.parseTextFile(mockFile(lines.join('\n')), () => { }, () => { });
+
+        assert.equal(result.method, 'text-parser-v4');
+        assert.equal(result.parsedData.length, 12);
+
+        // IR satır şekli
+        const row = result.parsedData[0];
+        assert.ok(row.timestamp instanceof Date);
+        assert.equal(row.confidence, 1);
+        assert.equal(typeof row.rowIndex, 'number');
+        assert.ok(typeof row.rawText === 'string' && row.rawText.includes('.03.2024'));
+
+        // Belge düzeyi IR bloğu
+        const ext = result.metadata.extraction;
+        assert.equal(ext.sourcePath, 'text');
+        assert.equal(ext.totalCandidates, 12);
+        assert.equal(ext.dateFormat.format, 'DMY');
+        assert.equal(ext.dateFormat.ambiguous, false);
+
+        // Güven skoru: temiz veri → yüksek skor, inceleme istemez
+        assert.equal(ext.confidence.score, 100);
+        assert.equal(ext.confidence.needsReview, false);
+    });
+
+    test('tanınmayan metin formatı anlaşılır hata fırlatır', async () => {
+        await assert.rejects(
+            SP.parseTextFile(mockFile('rastgele\nmetin\nsatırları'), () => { }, () => { }),
+            /tanınmayan formatta/
+        );
+    });
+});
+
 describe('SmartParser.cleanYearOutliers — Yıl Filtreleme Mantığı', () => {
     test('çoğunluğa uymayan uzak yılları ayıklar', () => {
         const mockData = [

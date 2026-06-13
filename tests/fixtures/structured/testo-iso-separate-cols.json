@@ -1,0 +1,13 @@
+{
+  "name": "Testo Saveris · ISO tarih + ayrı saat sütunu · nokta ondalık",
+  "note": "Tarih ve saat ayrı sütunlarda, YYYY-MM-DD düzeni, virgül CSV ayracı",
+  "delimiter": ",",
+  "csv": "Date,Time,Temperature,Humidity\n2026-02-10,08:00:00,5.4,50\n2026-02-10,09:00:00,5.8,49\n2026-02-10,10:00:00,6.1,48\n2026-02-10,11:00:00,5.9,51",
+  "columnMapping": { "dateCol": "Date", "timeCol": "Time", "tempCol": "Temperature", "humidityCol": "Humidity" },
+  "expected": {
+    "rowCount": 4,
+    "first": { "iso": "2026-02-10T08:00:00", "temp": 5.4 },
+    "last": { "iso": "2026-02-10T11:00:00", "temp": 5.9 },
+    "dateFormat": "YMD"
+  }
+}

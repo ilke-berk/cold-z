@@ -269,6 +269,38 @@ const Utils = {
     },
 
     /**
+     * Önizleme/inceleme için baş–orta–son örneklemesi (Faz 3, HITL).
+     * İlk 3 satır yerine belgenin tamamına yayılmış ~n satır döner; tarih
+     * kayması (gün/ay takası) en çok ay sınırlarında görünür olduğundan
+     * orta ve son bölgeden örnek almak kritik.
+     * Dönen her öğe { index, row } şeklindedir; sıra korunur, tekrar yoktur.
+     */
+    sampleRows(rows, n = 10) {
+        if (!Array.isArray(rows) || rows.length === 0) return [];
+        if (rows.length <= n) {
+            return rows.map((row, index) => ({ index, row }));
+        }
+        const picked = new Set();
+        // Baş 3, son 3, kalan bütçe ortaya eşit aralıklı dağıtılır.
+        const headCount = Math.min(3, Math.floor(n / 3));
+        const tailCount = Math.min(3, Math.floor(n / 3));
+        for (let i = 0; i < headCount; i++) picked.add(i);
+        for (let i = 0; i < tailCount; i++) picked.add(rows.length - 1 - i);
+        const midBudget = n - picked.size;
+        for (let i = 1; i <= midBudget; i++) {
+            const idx = Math.round((rows.length - 1) * i / (midBudget + 1));
+            picked.add(idx);
+        }
+        // Çakışma olduysa (küçük diziler) bütçe dolana dek ek orta noktalar dene
+        let probe = 0;
+        while (picked.size < n && probe < rows.length) {
+            picked.add(probe);
+            probe++;
+        }
+        return [...picked].sort((a, b) => a - b).map(index => ({ index, row: rows[index] }));
+    },
+
+    /**
      * Parse timestamp string with a given format hint.
      */
     parseTimestamp(dateStr, timeStr, formatHint) {
@@ -316,9 +348,49 @@ const Utils = {
     },
 
     /**
-     * resolveDateFormat - Kullanıcı Mantığı
+     * Tarih format tespiti — TEK ÇÖZÜCÜ delegasyonu (Faz 2).
+     *
+     * Asıl iş date-format-detector.js'te (katmanlı: header → oylama → delta).
+     * Burası yalnızca sonucu parseTimestamp/parseDate'in beklediği format
+     * ipucu string'ine çevirir ve belirsizlik bayrağını taşır.
+     *
+     * @returns {{format:string, formatHint:string, method:string, confidence:number, ambiguous:boolean}}
+     */
+    resolveDateFormatDetailed(dateStrings) {
+        const FORMAT_HINTS = { DMY: 'DD.MM.YYYY', MDY: 'MM.DD.YYYY', YMD: 'YYYY-MM-DD' };
+
+        if (!dateStrings || dateStrings.length === 0) {
+            return { format: 'DMY', formatHint: 'DD.MM.YYYY', method: 'default', confidence: 0, ambiguous: true };
+        }
+
+        if (typeof DateFormatDetector !== 'undefined' && DateFormatDetector.detect) {
+            const r = DateFormatDetector.detect(dateStrings);
+            return { ...r, formatHint: FORMAT_HINTS[r.format] || 'DD.MM.YYYY' };
+        }
+
+        // Dedektör yüklü değilse (eski sayfa / kısmi test ortamı): varyans mantığı
+        const legacy = this._legacyResolveDateFormat(dateStrings);
+        if (legacy) {
+            const format = legacy === 'YYYY-MM-DD' ? 'YMD' : legacy === 'MM.DD.YYYY' ? 'MDY' : 'DMY';
+            return { format, formatHint: legacy, method: 'variance', confidence: 0.7, ambiguous: false };
+        }
+        return { format: 'DMY', formatHint: 'DD.MM.YYYY', method: 'default', confidence: 0.3, ambiguous: true };
+    },
+
+    /**
+     * resolveDateFormat — geriye uyumlu sözleşme:
+     * kesin tespit varsa format ipucu, belirsizse null döner.
      */
     resolveDateFormat(dateStrings) {
+        if (!dateStrings || dateStrings.length < 3) return null;
+        const r = this.resolveDateFormatDetailed(dateStrings);
+        return r.ambiguous ? null : r.formatHint;
+    },
+
+    /**
+     * Eski varyans karşılaştırması — yalnızca dedektör yokken yedek.
+     */
+    _legacyResolveDateFormat(dateStrings) {
         if (!dateStrings || dateStrings.length < 3) return null;
 
         const sampleParts = dateStrings[0].replace(/\s/g, '').split(/[.\/-]/);

@@ -15,6 +15,13 @@ window.CCPipeline = (function () {
     if (isNaN(d.getTime())) return '—';
     return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   }
+  // İnceleme önizlemesi yıl DAHİL tam tarih ister: gün/ay takası ve yıl
+  // kaymaları ancak tam tarihle fark edilir.
+  function fmtFullDT(ts) {
+    const d = ts instanceof Date ? ts : new Date(ts);
+    if (isNaN(d.getTime())) return '—';
+    return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
   function fmtDur(min) {
     if (window.Utils && Utils.formatDuration) return Utils.formatDuration(min || 0);
     return Math.round(min || 0) + ' dk';
@@ -93,18 +100,31 @@ window.CCPipeline = (function () {
   // files: [{ id, file }]   form: {pharmacy,drug,serial,batch,barcode,qty,expiry,amount,reason,purchaseDate,returnDate,city}
   // cfg:   {lowerLimit, upperLimit, torLimit}
   // hooks: {onStep(step), onFile(id, pct, statusText)}
-  async function run(files, form, cfg, hooks) {
+  // opts:  {approvedIds: [id], parseCache: {id: {mappingKey, res}}} — HITL onay kapısı (Faz 3).
+  //        Kapı tetiklenirse fonksiyon analiz YAPMADAN {needsReview, reviews, parseCache}
+  //        döner; UI onayları toplayıp aynı parseCache ile yeniden çağırır
+  //        (AI/OCR maliyeti ikinci koşuda sıfır).
+  async function run(files, form, cfg, hooks, opts) {
     hooks = hooks || {};
+    opts = opts || {};
     const onStep = hooks.onStep || function () {};
     const onFile = hooks.onFile || function () {};
+    const parseCache = opts.parseCache || {};
 
     if (typeof DataParser === 'undefined' || typeof MKTEngine === 'undefined' || typeof DecisionEngine === 'undefined') {
       throw new Error('Analiz motorları yüklenemedi. Sunucu (npm start) çalışıyor mu?');
     }
 
-    // 1) Her dosyayı çözümle
+    // 1) Her dosyayı çözümle (önbellek: aynı dosya + aynı eşleştirme tekrar parse edilmez)
     const parsed = [];
     for (const item of files) {
+      const mappingKey = JSON.stringify(item.columnMapping || null);
+      const cached = parseCache[item.id];
+      if (cached && cached.mappingKey === mappingKey) {
+        onFile(item.id, 100, (cached.res.rowCount || (cached.res.parsedData ? cached.res.parsedData.length : 0)) + ' kayıt (önbellek)');
+        parsed.push(cached.res);
+        continue;
+      }
       onFile(item.id, 6, 'işleniyor');
       let virtual = 6;
       const tick = setInterval(() => { virtual = Math.min(virtual + 4, 88); onFile(item.id, virtual, 'işleniyor'); }, 400);
@@ -113,9 +133,16 @@ window.CCPipeline = (function () {
           resampling: false,
           onProgress: (p) => { virtual = Math.max(virtual, p); onFile(item.id, virtual, 'işleniyor'); },
           columnMapping: item.columnMapping,
+          // Şablon hafızası (Faz 4): UI'da hesaplanan parmak izi + eşleşme
+          // bilgisi IR'a iner; bulanık eşleşme onay kapısını tetikler. Bu akış
+          // Faz 3 kapısına sahip olduğundan bulanık şablona izin verilir.
+          fingerprint: item.fingerprint,
+          templateMatch: item.templateMatch,
+          allowFuzzyTemplate: true,
         });
         clearInterval(tick);
         onFile(item.id, 100, (res.rowCount || (res.parsedData ? res.parsedData.length : 0)) + ' kayıt');
+        parseCache[item.id] = { mappingKey, res };
         parsed.push(res);
       } catch (err) {
         clearInterval(tick);
@@ -125,6 +152,56 @@ window.CCPipeline = (function () {
     }
 
     onStep({ ic: 'search', t: 'COLUMN_MAP', tx: 'Sütun tespiti — tarih & sıcaklık kolonları eşlendi', st: 'ok' });
+
+    // 1.5) Zorunlu onay kapısı (Faz 3): güven skoru eşik altındaysa, tarih formatı
+    // belirsizse veya sunucu needsReview gönderdiyse analiz BURADA durur.
+    if (typeof ConfidenceScore !== 'undefined' && ConfidenceScore.gate) {
+      const gateInput = files.map((item, i) => ({ id: item.id, name: item.file.name, metadata: parsed[i].metadata }));
+      // Örneklemeli QA (Faz 6 / Kademe 4): yüksek güvenli belgelerin ~1/10'u
+      // da denetime düşer — deterministik seçim, onay sonrası tekrarlamaz.
+      const qaRate = typeof opts.qaSampleRate === 'number' ? opts.qaSampleRate : ConfidenceScore.QA_SAMPLE_RATE;
+      const pending = ConfidenceScore.gate(gateInput, opts.approvedIds, { qaSampleRate: qaRate });
+      if (pending.length > 0) {
+        const reviews = pending.map(p => {
+          const idx = files.findIndex(f => f.id === p.id);
+          const rows = (idx >= 0 && parsed[idx].parsedData) || [];
+          const sample = (window.Utils && Utils.sampleRows ? Utils.sampleRows(rows, 10) : rows.slice(0, 10).map((row, index) => ({ index, row })))
+            .map(s => ({
+              index: s.index,
+              date: fmtFullDT(s.row.timestamp),
+              temp: s.row.temperature,
+              raw: s.row.rawText || '',
+            }));
+          // Kademe 2 (Faz 5): düşük güvenli OCR satırları — kaynak sayfa
+          // görüntüsüyle yan yana, düzenlenebilir ızgarada gösterilir.
+          const lowConfRows = rows
+            .map((row, index) => ({ row, index }))
+            .filter(x => typeof x.row.confidence === 'number' && x.row.confidence < 0.75)
+            .slice(0, 40)
+            .map(x => ({
+              idx: x.index,
+              date: fmtFullDT(x.row.timestamp),
+              temp: x.row.temperature,
+              conf: x.row.confidence,
+              raw: x.row.rawText || '',
+              page: x.row.page || null,
+            }));
+          return { ...p, sample, rowCount: rows.length, lowConfRows };
+        });
+        onStep({
+          ic: 'alert', t: 'HITL_GATE',
+          tx: `Onay kapısı — ${reviews.length} belge düşük güvenli çıkarım nedeniyle insan onayı bekliyor`,
+          st: 'warn',
+        });
+        postAudit({
+          type: 'review',
+          action: 'Onay kapısı tetiklendi',
+          details: reviews.map(r => `${r.name} · skor ${r.score === null ? '—' : r.score + '/100'}`).join(' | '),
+          tags: ['hitl', 'inceleme'],
+        });
+        return { needsReview: true, reviews, parseCache };
+      }
+    }
 
     const meta = (parsed.find(p => p.metadata && Object.keys(p.metadata).length) || {}).metadata || {};
     onStep({
@@ -186,8 +263,16 @@ window.CCPipeline = (function () {
     }
 
     // 6) DB'ye gidecek kayıt (eski AppState.currentAnalysis ile aynı şekil)
+    // Faz 6: normalize seri kompakt biçimde kayda eklenir ([epochMs, °C, güven]);
+    // /api/save-analysis bunu analysis_readings'e yazar → yeniden işlenebilirlik.
+    const readingsSeries = allData.map(d => {
+      const row = [new Date(d.timestamp).getTime(), d.temperature, typeof d.confidence === 'number' ? d.confidence : 1];
+      if (typeof d.humidity === 'number') row.push(d.humidity);
+      return row;
+    });
     const record = Object.assign({}, analysis, {
       decision,
+      readingsSeries,
       drugName: form.drug || 'Belirtilmemiş',
       batchNumber: form.batch || 'Belirtilmemiş',
       pharmacy: form.pharmacy || 'Belirtilmemiş',
@@ -203,10 +288,52 @@ window.CCPipeline = (function () {
 
     const scenario = toScenario(record, allData, form, cfg2);
 
-    // audit: analiz tamamlandı
-    postAudit({ type: 'analysis', action: 'Analiz tamamlandı', details: `${record.drugName} · MKT ${analysis.mkt.mkt}°C · ${decision.decision}`, tags: ['analiz', decision.decision] });
+    // 6.5) Şablon hafızası (Faz 4 / HITL Kademe 3): kapıdan geçen (yüksek
+    // güvenli veya insan onaylı) çıkarımların şeması parmak iziyle kaydedilir
+    // → sistem her format varyantını BİR KEZ öğrenir, sonraki belgeler AI'sız.
+    rememberTemplates(files, parsed, opts);
+
+    // audit: analiz tamamlandı (insan onayından geçtiyse izlenebilirlik için etiketlenir)
+    const approvedCount = (opts.approvedIds && opts.approvedIds.length) || 0;
+    postAudit({
+      type: 'analysis',
+      action: 'Analiz tamamlandı',
+      details: `${record.drugName} · MKT ${analysis.mkt.mkt}°C · ${decision.decision}`
+        + (approvedCount ? ` · ${approvedCount} belge insan onayıyla işlendi` : ''),
+      tags: approvedCount ? ['analiz', decision.decision, 'hitl-onaylı'] : ['analiz', decision.decision],
+    });
 
     return { record, scenario, rowCount: allData.length, decision, mkt: analysis.mkt.mkt, tor: Math.round(analysis.tor.torMinutes) };
+  }
+
+  // ---- Şablon hafızası kaydı (Faz 4) ----
+  // Kesin (hash) eşleşmeyle gelenler zaten hafızada → atlanır. Bulanık
+  // eşleşme onaylanırsa belgenin KENDİ parmak izi yeni varyant olarak yazılır.
+  // Kullanıcı onay ekranında "formatı hatırla"yı kapattıysa (templateOptOut)
+  // kayıt yapılmaz. Kaynak etiketi izlenebilirlik içindir: insan onayından
+  // geçen 'hitl-onay', kapıyı skoruyla geçen 'oto-yuksek-guven'.
+  function rememberTemplates(files, parsed, opts) {
+    const optOut = opts.templateOptOut || {};
+    const approved = new Set(opts.approvedIds || []);
+    for (let i = 0; i < files.length; i++) {
+      const p = parsed[i];
+      const ext = p && p.metadata && p.metadata.extraction;
+      if (!ext || !ext.fingerprint || !ext.fingerprint.hash || !ext.schema) continue;
+      if (ext.template && ext.template.match === 'exact') continue;
+      if (optOut[files[i].id]) continue;
+      fetch('/api/templates', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fingerprint: ext.fingerprint.hash,
+          kind: ext.fingerprint.kind || 'pdf',
+          headerTokens: ext.fingerprint.headerTokens || [],
+          producer: ext.fingerprint.producer || '',
+          brand: ext.fingerprint.brandDetected || ext.schema.deviceBrand || (p.metadata.deviceBrand || ''),
+          schema: ext.schema,
+          source: approved.has(files[i].id) ? 'hitl-onay' : 'oto-yuksek-guven',
+        }),
+      }).catch(() => {});
+    }
   }
 
   // ---- API yardımcıları ----
