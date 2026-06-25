@@ -94,6 +94,45 @@
         return header ? tokenize(maskDigits(header)) : [];
     }
 
+    // Bir satırı içerikten arındırılmış "şekle" indirger: her rakam dizisi
+    // tek '#'e iner (4.2 ve 12.5 aynı şekle düşer), boşluk normalize edilir,
+    // büyük/küçük harf eşitlenir. Ayraçlar ve birim harfleri (°c, %) korunur.
+    // Böylece VERİ satırları (her sayfada bulunur) sayfadan bağımsız sabit bir
+    // desen verir — başlık satırı yalnızca ilk sayfada bassa bile.
+    function rowShape(line) {
+        let s = normalizeWhitespace(canon(line));
+        if (!s) return '';
+        return s.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+    }
+
+    // Sayfadaki en sık görülen veri-satırı şekli = belgenin "satır deseni
+    // imzası". Başlık/meta satırları azınlıkta kaldığından baskın şekil daima
+    // veri satırıdır; aynı belgenin başlıklı sayfası da başlıksız devam sayfası
+    // da AYNI imzayı üretir. En az 2 benzer satır olmazsa imza üretilmez.
+    function rowSignature(lines) {
+        const counts = new Map();
+        for (const ln of (lines || [])) {
+            const shape = rowShape(ln);
+            // Veri satırı sezgisi: en az 2 rakam grubu (tarih + değer gibi).
+            if ((shape.match(/#/g) || []).length < 2) continue;
+            counts.set(shape, (counts.get(shape) || 0) + 1);
+        }
+        let best = '', bestN = 0;
+        for (const [shape, n] of counts) {
+            if (n > bestN) { bestN = n; best = shape; }
+        }
+        return bestN >= 2 ? best : '';
+    }
+
+    // Yapısal (satır-deseni) eşleşmenin otomatik uygulanabilmesi için imza
+    // yeterince ayırt edici olmalı — aksi halde "#  #" gibi cılız desenler
+    // alakasız belgeleri eşleştirebilir. Gerçek bir ölçüm satırı
+    // (örn. "#.#.# #:# #.# #") bu eşiği rahatça geçer.
+    function isRichSignature(sig) {
+        const s = String(sig || '');
+        return s.length >= 8 && (s.match(/#/g) || []).length >= 3;
+    }
+
     async function sha256Hex(str) {
         const g = typeof globalThis !== 'undefined' ? globalThis : {};
         if (g.crypto && g.crypto.subtle && typeof TextEncoder !== 'undefined') {
@@ -117,16 +156,24 @@
      * girer — bu belge eczaneler arası genellemeyebilir ama asla yanlış
      * şablonla eşleşmez.
      */
-    async function pdfFingerprint({ lines, producer, creator } = {}) {
-        const headerTokens = headerTokensFromLines(lines || []);
+    async function pdfFingerprint({ lines, headerLines, producer, creator } = {}) {
+        // idLines: birincil kimlik sayfası (başlığı içeren sayfa). Çağıran
+        // başlık taramasını yaptıysa o sayfayı verir; vermezse `lines` kullanılır
+        // (geriye dönük uyum — eski çağrılar yalnızca `lines` gönderir).
+        const idLines = (headerLines && headerLines.length) ? headerLines : (lines || []);
+        const headerTokens = headerTokensFromLines(idLines);
+        // Satır deseni imzası tüm taranan sayfaların satırlarından üretilir;
+        // hash'i ETKİLEMEZ (ayrı, sayfa-bağımsız ikincil eşleştirme anahtarı).
+        const rowSig = rowSignature((lines && lines.length) ? lines : idLines);
         const skeleton = headerTokens.length > 0
             ? headerTokens.join('|')
-            : 'raw:' + normalizeWhitespace(canon(maskDigits((lines || []).join(String.fromCharCode(10)))));
+            : 'raw:' + normalizeWhitespace(canon(maskDigits(idLines.join(String.fromCharCode(10)))));
         const payload = ['pdf', skeleton, producer || '', creator || ''].join(String.fromCharCode(1));
         return {
             kind: 'pdf',
             hash: await sha256Hex(payload),
             headerTokens,
+            rowSignature: rowSig,
             producer: producer || '',
             creator: creator || ''
         };
@@ -174,16 +221,21 @@
     }
 
     /**
-     * İki kademeli eşleştirme (kayıt ve sorgu simetrik):
+     * Üç kademeli eşleştirme (kayıt ve sorgu simetrik):
      *  1. Kesin (hash): birebir tutarsa şablon anında uygulanır (sıfır AI).
      *     Belgedeki marka kelimesi şablon etiketiyle çelişiyorsa
      *     `brandConflict: true` döner → insan kuyruğuna yönlendirilmeli.
-     *  2. Bulanık: başlık token kümeleri Jaccard ≥ FUZZY_THRESHOLD ve
+     *  2. Yapısal (rowSignature): başlık satırı bulunamadığında (aynı belgenin
+     *     BAŞLIKSIZ devam sayfaları ayrı yüklendiğinde) satır-deseni imzası +
+     *     (biliniyorsa) aynı Producer belgeyi sayfadan bağımsız tanır. İmza
+     *     yeterince ayırt edici olmalı (isRichSignature). Güçlü bir sinyal
+     *     olduğundan kesin eşleşme gibi otomatik uygulanabilir.
+     *  3. Bulanık: başlık token kümeleri Jaccard ≥ FUZZY_THRESHOLD ve
      *     (ikisi de biliniyorsa) aynı Producer → aday önerilir ama ASLA
      *     sessizce uygulanmaz; marka ipucu aday kümesini daraltır.
      *
-     * templates: [{ fingerprint, kind, brand, producer, headerTokens, schema, ... }]
-     * query:     { fingerprint, headerTokens, producer, kind, brandHint }
+     * templates: [{ fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, ... }]
+     * query:     { fingerprint, headerTokens, rowSignature, producer, kind, brandHint }
      */
     function matchTemplate(templates, query) {
         const list = templates || [];
@@ -197,6 +249,25 @@
                 similarity: 1,
                 brandConflict: !brandsAgree(exact.brand, q.brandHint)
             };
+        }
+
+        // 2. Yapısal kesin eşleşme — başlıksız devam sayfaları için. İmza
+        //    birebir tutmalı; kind/Producer çelişmemeli, marka çelişmemeli.
+        if (q.rowSignature && isRichSignature(q.rowSignature)) {
+            const structural = list.find(t =>
+                t.rowSignature && t.rowSignature === q.rowSignature &&
+                (!q.kind || !t.kind || t.kind === q.kind) &&
+                (!q.producer || !t.producer || q.producer === t.producer) &&
+                brandsAgree(t.brand, q.brandHint)
+            );
+            if (structural) {
+                return {
+                    match: 'structural',
+                    template: structural,
+                    similarity: 0.99,
+                    brandConflict: !brandsAgree(structural.brand, q.brandHint)
+                };
+            }
         }
 
         let best = null;
@@ -223,6 +294,9 @@
         tokenize,
         findHeaderLine,
         headerTokensFromLines,
+        rowShape,
+        rowSignature,
+        isRichSignature,
         sha256Hex,
         pdfFingerprint,
         tabularFingerprint,

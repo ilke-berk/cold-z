@@ -76,8 +76,12 @@ var SmartParser = (function () {
                 const tpl = await this.matchKnownTemplate(file, textCheck);
                 if (tpl) {
                     fingerprint = tpl.fingerprint;
+                    // Kesin (hash) ve yapısal (satır-deseni) eşleşme güçlü
+                    // sinyaldir → otomatik uygulanır. Bulanık eşleşme yalnızca
+                    // onay kapısı olan akışta (allowFuzzyTemplate) uygulanır.
+                    const autoApply = tpl.match === 'exact' || tpl.match === 'structural';
                     const fuzzyAllowed = tpl.match === 'fuzzy' && options.allowFuzzyTemplate;
-                    if ((tpl.match === 'exact' || fuzzyAllowed) && tpl.template?.schema?.dateOrder) {
+                    if ((autoApply || fuzzyAllowed) && tpl.template?.schema?.dateOrder) {
                         schema = tpl.template.schema;
                         schemaResult = { success: true, schema, cost: { total: 0 } };
                         templateUse = {
@@ -89,6 +93,8 @@ var SmartParser = (function () {
                         };
                         if (tpl.match === 'exact') {
                             log('🗂️', `Bilinen format tanındı: ${tpl.template.brand || 'etiketsiz şablon'} → şablon hafızasından anında parse (AI maliyeti 0).`, 'success');
+                        } else if (tpl.match === 'structural') {
+                            log('🗂️', `Aynı belge ailesi tanındı (satır deseni eşleşti): ${tpl.template.brand || 'etiketsiz şablon'} → başlıksız sayfa olsa da şablon hafızasından anında parse (AI maliyeti 0).`, 'success');
                         } else {
                             log('🗂️', `Benzer format şablonu önerildi: ${tpl.template.brand || '#' + tpl.template.id} (%${Math.round((tpl.similarity || 0) * 100)} benzer) — sessizce uygulanmaz, insan onayına düşecek.`, 'warning');
                         }
@@ -373,18 +379,32 @@ var SmartParser = (function () {
             try {
                 const arrayBuffer = await file.arrayBuffer();
                 const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-                const page = await pdf.getPage(1);
-                const textContent = await page.getTextContent();
                 const metaData = await pdf.getMetadata();
+
+                // Şablon hafızası (Faz 4) parmak izi için ilk birkaç sayfanın
+                // satırları toplanır. Kolon başlığı çoğu logger PDF'inde yalnızca
+                // ilk veri sayfasında basılır; aynı belgenin "devam sayfaları"
+                // ayrı yüklendiğinde başlığı yakalayabilmek için ilk birkaç sayfa
+                // taranır (fpPages). Veri satırları her sayfada bulunduğundan
+                // satır-deseni imzası bu sayfalardan sayfa-bağımsız üretilebilir.
+                const scanCount = Math.min(3, pdf.numPages);
+                const fpPages = [];
+                let page1TextContent = null;
+                for (let pno = 1; pno <= scanCount; pno++) {
+                    const pg = await pdf.getPage(pno);
+                    const tc = await pg.getTextContent();
+                    if (pno === 1) page1TextContent = tc;
+                    const pgItems = tc.items.map(item => ({
+                        str: item.str, x: item.transform[4], y: item.transform[5]
+                    }));
+                    pgItems.sort((a, b) => b.y - a.y);
+                    fpPages.push(Utils.groupLines(pgItems).map(line => line.map(i => i.str).join(' ')));
+                }
+
+                const textContent = page1TextContent;
                 const fullText = textContent.items.map(i => i.str).join(' ');
                 const serialMatch = fullText.match(/(?:S\/N|Seri No|Serial|Cihaz No|Logger ID|ID|No)\s*[:=]?\s*([A-Z0-9-]{5,20})/i);
-                // Şablon hafızası (Faz 4) sayfa-1 satırlarına ve PDF üretici
-                // alanlarına ihtiyaç duyar — parmak izi bunlardan üretilir.
-                const items = textContent.items.map(item => ({
-                    str: item.str, x: item.transform[4], y: item.transform[5]
-                }));
-                items.sort((a, b) => b.y - a.y);
-                const page1Lines = Utils.groupLines(items).map(line => line.map(i => i.str).join(' '));
+                const page1Lines = fpPages[0] || [];
                 return {
                     itemCount: textContent.items.length,
                     pageCount: pdf.numPages,
@@ -392,6 +412,7 @@ var SmartParser = (function () {
                     producer: metaData?.info?.Producer || '',
                     creator: metaData?.info?.Creator || '',
                     page1Lines,
+                    fpPages,
                     page1Text: fullText,
                     deviceSerial: serialMatch ? serialMatch[1].trim() : null
                 };
@@ -409,19 +430,32 @@ var SmartParser = (function () {
             if (typeof FormatFingerprint === 'undefined') return null;
             try {
                 const check = textCheck || await this.checkDigitalContent(file);
-                if (!check.page1Lines || !check.page1Lines.length) return null;
+                const fpPages = (check.fpPages && check.fpPages.length)
+                    ? check.fpPages
+                    : (check.page1Lines && check.page1Lines.length ? [check.page1Lines] : []);
+                if (!fpPages.length) return null;
+                const allLines = fpPages.reduce((acc, pg) => acc.concat(pg), []);
+                // Başlığı (kolon adları) içeren ilk sayfayı bul; devam sayfaları
+                // başlıksız olabileceğinden başlık token'ları o sayfadan, satır
+                // deseni ise tüm taranan sayfalardan üretilir.
+                let headerLines = null;
+                for (const pg of fpPages) {
+                    if (FormatFingerprint.findHeaderLine(pg)) { headerLines = pg; break; }
+                }
                 const fingerprint = await FormatFingerprint.pdfFingerprint({
-                    lines: check.page1Lines,
+                    lines: allLines,
+                    headerLines: headerLines || fpPages[0],
                     producer: check.producer,
                     creator: check.creator
                 });
-                fingerprint.brandDetected = FormatFingerprint.detectBrand(check.page1Text || check.page1Lines.join(' '));
+                fingerprint.brandDetected = FormatFingerprint.detectBrand(check.page1Text || allLines.join(' '));
                 const resp = await fetch(this.TEMPLATE_MATCH_ENDPOINT, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         fingerprint: fingerprint.hash,
                         headerTokens: fingerprint.headerTokens,
+                        rowSignature: fingerprint.rowSignature,
                         producer: fingerprint.producer,
                         kind: 'pdf',
                         brandHint: fingerprint.brandDetected

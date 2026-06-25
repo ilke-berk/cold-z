@@ -99,6 +99,68 @@ describe('MKTEngine.analyzeCompliance', () => {
     });
 });
 
+describe('MKTEngine.retrospectiveMKTCheck', () => {
+    const mkData = (temps, startTs = new Date('2026-01-01T00:00:00Z')) =>
+        temps.map((t, i) => ({
+            timestamp: new Date(startTs.getTime() + i * 15 * 60 * 1000), // 15dk aralık
+            temperature: t,
+        }));
+
+    test('hep 2-8 içinde → tetiklenmez, sorun yok', () => {
+        const r = MKTEngine.retrospectiveMKTCheck(mkData([3, 4, 5, 6, 7, 5, 4]));
+        assert.equal(r.triggered, false);
+        assert.equal(r.hasProblem, false);
+        assert.equal(r.windows.length, 0);
+    });
+
+    test('kısa düşük sapma + 24h MKT içeride → tetiklenir, sorun yok', () => {
+        const temps = new Array(96).fill(5);
+        temps[80] = 1.5; // tek düşük sapma (0-2 bandı)
+        const r = MKTEngine.retrospectiveMKTCheck(mkData(temps));
+        assert.equal(r.triggered, true);
+        assert.equal(r.hasProblem, false);
+        assert.equal(r.windows[0].type, 'low');
+    });
+
+    test('sürekli yüksek → 24h MKT limit dışı → hatalı aralık', () => {
+        const r = MKTEngine.retrospectiveMKTCheck(mkData(new Array(96).fill(12)));
+        assert.equal(r.triggered, true);
+        assert.equal(r.hasProblem, true);
+        assert.ok(r.problemCount >= 1);
+        const w = r.windows.find(x => !x.isOk);
+        assert.ok(w.mkt24h > 8, `mkt24h=${w.mkt24h}`);
+        assert.ok(w.windowStart && w.windowEnd, 'hatalı aralık zaman damgaları var');
+    });
+
+    test('İSTİSNASIZ: kritik sapma (>15) için de geriye MKT hesaplanır', () => {
+        // analyzeCompliance bu durumda "MKT Aranmaz" der; retrospective hesaplar.
+        const temps = new Array(96).fill(5);
+        temps[80] = 18; // kritik yüksek sapma
+        const r = MKTEngine.retrospectiveMKTCheck(mkData(temps));
+        assert.equal(r.triggered, true);
+        assert.equal(r.windows.length, 1);
+        assert.equal(r.windows[0].type, 'high');
+        assert.equal(r.windows[0].peakTemp, 18);
+        assert.ok(r.windows[0].mkt24h != null, 'kritik sapmada da MKT hesaplanmalı');
+    });
+
+    test('İSTİSNASIZ: kritik düşük sapma (<0) için de geriye MKT hesaplanır', () => {
+        const temps = new Array(96).fill(5);
+        temps[80] = -2; // kritik donma sapması
+        const r = MKTEngine.retrospectiveMKTCheck(mkData(temps));
+        assert.equal(r.triggered, true);
+        assert.equal(r.windows[0].type, 'low');
+        assert.ok(r.windows[0].mkt24h != null);
+    });
+
+    test('boş veri → güvenli boş sonuç', () => {
+        const r = MKTEngine.retrospectiveMKTCheck([]);
+        assert.equal(r.triggered, false);
+        assert.equal(r.hasProblem, false);
+        assert.equal(r.windows.length, 0);
+    });
+});
+
 describe('MKTEngine.evaluateStabilityBudget', () => {
     test('düşük TOR → safe', () => {
         const r = MKTEngine.evaluateStabilityBudget(30, 120);

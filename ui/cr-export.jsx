@@ -124,6 +124,7 @@
     const DOC_DATE = getDocDate();
 
     const tir = S.tir;
+    const retro = window.CCRetro ? window.CCRetro(S) : null;
     const doc = (
       <div className="pd">
         <style>{PD_CSS}</style>
@@ -178,16 +179,6 @@
           {S.reasons.map((r, i) => <div key={i} className="pd-rs" style={{ borderColor: m.hex }}>{r}</div>)}
         </section>
 
-        {/* Sıcaklık grafiği */}
-        <section className="pd-block">
-          <div className="pd-st">Sıcaklık Profili · Ölçüm Süresi</div>
-          <div className="pd-chart">
-            <CCTempChart data={S.temp} w={740} h={188} color="#0f81a8" band={[2, 8]}
-              gridColor="#eef2f6" axisColor="#94a3b8" bandColor="rgba(28,153,97,.12)" fill={true} />
-          </div>
-          <div className="pd-cap">Yeşil bant: 2–8 °C kabul aralığı · Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası · {S.gap} dk kayıt aralığı</div>
-        </section>
-
         {/* İstatistik tablosu */}
         <section className="pd-block">
           <div className="pd-st">Sıcaklık İstatistikleri</div>
@@ -211,42 +202,55 @@
           </div>
         </section>
 
-        {/* Sapma kayıtları */}
+        {/* MKT Kontrol (Geriye Dönük) */}
+        {retro && (
+          <section className="pd-block">
+            <div className="pd-st">MKT Kontrol · Geriye Dönük 24 Saat</div>
+            {!retro.triggered ? (
+              <div className="pd-reg">
+                <b>Sorun bulunamadı</b> — sıcaklık hiçbir noktada {retro.lo}–{retro.hi} °C aralığının dışına çıkmadı; geriye dönük 24 saatlik MKT kontrolü gerekmedi.
+              </div>
+            ) : !retro.hasProblem ? (
+              <div className="pd-reg">
+                <b>Sorun bulunamadı</b> — tespit edilen {retro.excursionCount} sapma için düzelme anından geriye 24 saatlik MKT hesaplandı ve tümü {retro.lo}–{retro.hi} °C aralığında kaldı.
+              </div>
+            ) : (
+              <div className="pd-tblWrap">
+                <table className="pd-tbl">
+                  <thead><tr><th>Sapma</th><th>Geriye Dönük 24 Saatlik Aralık</th><th>24h MKT</th><th style={{ textAlign: 'right' }}>Durum</th></tr></thead>
+                  <tbody>
+                    {retro.windows.map((w, i) => (
+                      <tr key={i}>
+                        <td>{w.type === 'high' ? 'Yüksek' : 'Düşük'} · {w.peak} °C</td>
+                        <td className="m" style={{ color: '#475569' }}>{w.range}</td>
+                        <td className="m" style={{ fontWeight: 600, color: w.isOk ? '#334155' : '#cb3c48' }}>{w.mkt24h != null ? w.mkt24h + ' °C' : '—'}</td>
+                        <td style={{ textAlign: 'right' }}><span className="pd-bd" style={{ color: w.isOk ? '#1c9961' : '#cb3c48', background: w.isOk ? '#e9f6ee' : '#fae7e8' }}>{w.isOk ? 'UYGUN' : 'İHLAL'}</span></td>
+                      </tr>))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 7, lineHeight: 1.5 }}>
+              <b>Yöntem:</b> Sıcaklık {retro.lo}–{retro.hi} °C aralığının dışına her çıktığında, sapmanın düzeldiği andan geriye doğru 24 saatlik MKT hesaplanır. Bu pencerenin MKT'si aralık dışındaysa ilgili aralık hatalı bildirilir.
+            </div>
+          </section>
+        )}
+
+        {/* Sıcaklık grafiği (ısı kaydı) */}
         <section className="pd-block">
-          <div className="pd-st">Tespit Edilen Sapmalar ({S.excursions.length})</div>
-          <div className="pd-tblWrap">
-            <table className="pd-tbl">
-              <thead><tr><th>#</th><th>Başlangıç</th><th>Bitiş</th><th>Süre</th><th>Tür</th><th style={{ textAlign: 'right' }}>Tepe</th></tr></thead>
-              <tbody>
-                {S.excursions.map((x, i) => (
-                  <tr key={i}>
-                    <td className="m" style={{ color: '#94a3b8' }}>{String(i + 1).padStart(2, '0')}</td>
-                    <td className="m">{x.start}</td>
-                    <td className="m">{x.end}</td>
-                    <td className="m" style={{ fontWeight: 600 }}>{x.dur}</td>
-                    <td>{x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık'}</td>
-                    <td className="m" style={{ textAlign: 'right', fontWeight: 700, color: x.peak > 8 || x.peak < 2 ? '#cb3c48' : '#1c9961' }}>{x.peak.toFixed(2)} °C</td>
-                  </tr>))}
-              </tbody>
-            </table>
+          <div className="pd-st">Sıcaklık Profili · Ölçüm Süresi</div>
+          <div className="pd-chart">
+            <CCTempChart data={S.temp} w={740} h={188} color="#0f81a8" band={[2, 8]}
+              gridColor="#eef2f6" axisColor="#94a3b8" bandColor="rgba(28,153,97,.12)" fill={true} />
           </div>
+          <div className="pd-cap">Yeşil bant: 2–8 °C kabul aralığı · Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası · {S.gap} dk kayıt aralığı</div>
         </section>
 
-        {/* Isı dağılımı + Veri bütünlüğü */}
-        <section className="pd-block pd-2c">
-          <div>
-            <div className="pd-st">Isı Maruziyet Dağılımı</div>
-            {[['İdeal · 2–8 °C', tir.ideal, '#1c9961'], ['Hafif ihlal · 0–2 / 8–15 °C', tir.warn, '#b07d18'], ['Kritik · <0 / >15 °C', tir.crit, '#cb3c48']].map(([l, v, c]) => (
-              <div key={l} className="pd-tir">
-                <div className="pd-tirL"><span>{l}</span><b className="pd-mono" style={{ color: c }}>%{v}</b></div>
-                <div className="pd-bar"><div className="pd-barf" style={{ width: v + '%', background: c }} /></div>
-              </div>))}
-          </div>
-          <div>
-            <div className="pd-st">Veri Bütünlüğü & Güvenlik</div>
-            {[['Cihaz / sensör bütünlüğü', 'Sağlam'], ['Harici düzenleme izi', 'Saptanmadı'], ['Doğal dalgalanma sapması', 'Uygun'], ['PDF kalıp / boşluk analizi', 'Tutarlı']].map(([l, v]) => (
-              <div key={l} className="pd-sec"><span style={{ color: '#475569' }}>{l}</span><span className="pd-ok">✓ {v}</span></div>))}
-          </div>
+        {/* Veri bütünlüğü */}
+        <section className="pd-block">
+          <div className="pd-st">Veri Bütünlüğü & Güvenlik</div>
+          {[['Cihaz / sensör bütünlüğü', 'Sağlam'], ['Harici düzenleme izi', 'Saptanmadı'], ['Doğal dalgalanma sapması', 'Uygun'], ['PDF kalıp / boşluk analizi', 'Tutarlı']].map(([l, v]) => (
+            <div key={l} className="pd-sec"><span style={{ color: '#475569' }}>{l}</span><span className="pd-ok">✓ {v}</span></div>))}
         </section>
 
         {/* Mevzuat */}
@@ -269,6 +273,43 @@
             <div className="pd-sigLine" />
             <div className="pd-sigSub">Ad Soyad / İmza / Kaşe</div>
           </div>
+        </section>
+
+        {/* ===== EK · ısı sapmaları ===== */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '26px 0 14px' }}>
+          <span style={{ fontSize: 9, letterSpacing: '1.4px', textTransform: 'uppercase', fontWeight: 700, color: '#94a3b8', border: '1px solid #e3e9f0', borderRadius: 4, padding: '3px 9px' }}>EK · Isı Sapmaları</span>
+          <span style={{ flex: 1, height: 1, background: '#e3e9f0' }} />
+        </div>
+
+        {/* EK-1 · Sapma kayıtları */}
+        <section className="pd-block">
+          <div className="pd-st">EK-1 · Tespit Edilen Sapmalar ({S.excursions.length})</div>
+          <div className="pd-tblWrap">
+            <table className="pd-tbl">
+              <thead><tr><th>#</th><th>Başlangıç</th><th>Bitiş</th><th>Süre</th><th>Tür</th><th style={{ textAlign: 'right' }}>Tepe</th></tr></thead>
+              <tbody>
+                {S.excursions.map((x, i) => (
+                  <tr key={i}>
+                    <td className="m" style={{ color: '#94a3b8' }}>{String(i + 1).padStart(2, '0')}</td>
+                    <td className="m">{x.start}</td>
+                    <td className="m">{x.end}</td>
+                    <td className="m" style={{ fontWeight: 600 }}>{x.dur}</td>
+                    <td>{x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık'}</td>
+                    <td className="m" style={{ textAlign: 'right', fontWeight: 700, color: x.peak > 8 || x.peak < 2 ? '#cb3c48' : '#1c9961' }}>{x.peak.toFixed(2)} °C</td>
+                  </tr>))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* EK-2 · Isı maruziyet dağılımı */}
+        <section className="pd-block">
+          <div className="pd-st">EK-2 · Isı Maruziyet Dağılımı</div>
+          {[['İdeal · 2–8 °C', tir.ideal, '#1c9961'], ['Hafif ihlal · 0–2 / 8–15 °C', tir.warn, '#b07d18'], ['Kritik · <0 / >15 °C', tir.crit, '#cb3c48']].map(([l, v, c]) => (
+            <div key={l} className="pd-tir">
+              <div className="pd-tirL"><span>{l}</span><b className="pd-mono" style={{ color: c }}>%{v}</b></div>
+              <div className="pd-bar"><div className="pd-barf" style={{ width: v + '%', background: c }} /></div>
+            </div>))}
         </section>
 
         <footer className="pd-ft">

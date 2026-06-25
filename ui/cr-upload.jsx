@@ -254,7 +254,7 @@
           let schema = null, fingerprint = null, templateMatch = null, statusText = 'Şema hazır';
           const tpl = SmartParser.matchKnownTemplate ? await SmartParser.matchKnownTemplate(file) : null;
           if (tpl) fingerprint = tpl.fingerprint || null;
-          if (tpl && (tpl.match === 'exact' || tpl.match === 'fuzzy') && tpl.template && tpl.template.schema && tpl.template.schema.dateOrder) {
+          if (tpl && (tpl.match === 'exact' || tpl.match === 'structural' || tpl.match === 'fuzzy') && tpl.template && tpl.template.schema && tpl.template.schema.dateOrder) {
             schema = tpl.template.schema;
             templateMatch = {
               id: tpl.template.id,
@@ -265,7 +265,9 @@
             };
             statusText = tpl.match === 'exact'
               ? `Bilinen format: ${tpl.template.brand || 'şablon #' + tpl.template.id} (AI maliyeti 0)`
-              : `Önerilen şablon: ${tpl.template.brand || '#' + tpl.template.id} (%${Math.round((tpl.similarity || 0) * 100)} benzer) — onay gerekecek`;
+              : tpl.match === 'structural'
+                ? `Aynı belge ailesi (satır deseni): ${tpl.template.brand || 'şablon #' + tpl.template.id} (AI maliyeti 0)`
+                : `Önerilen şablon: ${tpl.template.brand || '#' + tpl.template.id} (%${Math.round((tpl.similarity || 0) * 100)} benzer) — onay gerekecek`;
           } else {
             const res = await SmartParser.discoverSchema(file, 1);
             if (res.success && res.schema) schema = res.schema;
@@ -918,7 +920,7 @@
                       {/* Şablon hafızası (Faz 4 / Kademe 3): öğreten onay */}
                       {(() => {
                         const fl = files.find(x => x.id === rev.id);
-                        const canRemember = fl && fl.fingerprint && (!fl.templateMatch || fl.templateMatch.match !== 'exact');
+                        const canRemember = fl && fl.fingerprint && (!fl.templateMatch || (fl.templateMatch.match !== 'exact' && fl.templateMatch.match !== 'structural'));
                         if (!canRemember || ok) return null;
                         return (
                           <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 9, fontSize: 11.5, color: 'var(--t2)', cursor: 'pointer' }}>

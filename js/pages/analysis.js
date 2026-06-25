@@ -236,6 +236,110 @@ const AnalysisPage = {
         }
     },
 
+    /**
+     * "MKT Kontrol (Geriye Dönük)" bölümünü oluşturur.
+     * Sıcaklık 2-8 dışına her çıktığında (istisnasız) düzelme anından geriye
+     * 24 saatlik MKT kontrol edilir. Sorun yoksa "Sorun bulunamadı", varsa
+     * hatalı 24 saatlik aralık(lar) gösterilir.
+     */
+    renderRetrospectiveMKT(a) {
+        const lower = a.config?.lowerLimit ?? 2;
+        const upper = a.config?.upperLimit ?? 8;
+        const retro = a.retrospectiveMKT;
+
+        // Eski/eksik analiz nesneleri için güvenli geri dönüş (canlı hesap)
+        const r = retro || (typeof MKTEngine !== 'undefined'
+            ? MKTEngine.retrospectiveMKTCheck(AppState.parsedData || [], lower, upper)
+            : { triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows: [] });
+
+        let badgeClass, badgeText;
+        if (r.hasProblem) { badgeClass = 'chip-danger'; badgeText = `${r.problemCount} HATALI ARALIK`; }
+        else if (r.triggered) { badgeClass = 'chip-success'; badgeText = 'SORUN BULUNAMADI'; }
+        else { badgeClass = 'chip-success'; badgeText = 'TEMİZ'; }
+
+        // Gövde
+        let body = '';
+        if (!r.triggered) {
+            body = `
+                <div style="display:flex;align-items:center;gap:12px;padding:18px;background:rgba(16,185,129,0.06);border-radius:8px">
+                    <span style="font-size:1.6rem">✅</span>
+                    <div>
+                        <div style="font-weight:600;color:var(--color-success-500)">Sorun bulunamadı</div>
+                        <div style="font-size:0.85rem;color:var(--text-secondary)">Sıcaklık hiçbir noktada ${lower}-${upper}°C aralığının dışına çıkmadı; geriye dönük 24 saatlik MKT kontrolü gerekmedi.</div>
+                    </div>
+                </div>`;
+        } else if (!r.hasProblem) {
+            body = `
+                <div style="display:flex;align-items:center;gap:12px;padding:18px;background:rgba(16,185,129,0.06);border-radius:8px">
+                    <span style="font-size:1.6rem">✅</span>
+                    <div>
+                        <div style="font-weight:600;color:var(--color-success-500)">Sorun bulunamadı</div>
+                        <div style="font-size:0.85rem;color:var(--text-secondary)">Tespit edilen <strong>${r.excursionCount}</strong> sapma için düzelme anından geriye 24 saatlik MKT hesaplandı ve tümü ${lower}-${upper}°C aralığında kaldı.</div>
+                    </div>
+                </div>`;
+        } else {
+            const problem = r.windows.filter(w => !w.isOk);
+            const ok = r.windows.filter(w => w.isOk);
+
+            const rowHtml = (w, faulty) => `
+                <tr class="${faulty ? 'deviation-highlight' : ''}">
+                    <td>
+                        <span class="badge-status badge-${w.type === 'high' ? 'reject' : 'conditional'}">
+                            ${w.type === 'high' ? 'Yüksek' : 'Düşük'} (${w.peakTemp}°C)
+                        </span>
+                    </td>
+                    <td style="font-size:0.82rem">${Utils.formatDateTime(w.windowStart)} → ${Utils.formatDateTime(w.windowEnd)}</td>
+                    <td style="font-weight:700;color:${faulty ? 'var(--color-danger-400)' : 'var(--text-primary)'}">${w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
+                    <td>${Components.decisionBadge(faulty ? 'reject' : 'accept', faulty
+                        ? `Hatalı aralık: Bu 24 saatlik pencerede MKT (${w.mkt24h}°C) ${lower}-${upper}°C dışında.`
+                        : `24h MKT (${w.mkt24h}°C) limit içinde kaldı.`)}</td>
+                </tr>`;
+
+            body = `
+                <div style="display:flex;align-items:center;gap:12px;padding:14px 18px;background:rgba(239,68,68,0.07);border-radius:8px;margin-bottom:14px">
+                    <span style="font-size:1.6rem">⚠️</span>
+                    <div>
+                        <div style="font-weight:600;color:var(--color-danger-500)">${r.problemCount} hatalı aralık tespit edildi</div>
+                        <div style="font-size:0.85rem;color:var(--text-secondary)">Aşağıdaki geriye dönük 24 saatlik pencere(ler)de MKT ${lower}-${upper}°C aralığının dışında kaldı.</div>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table class="data-table">
+                        <thead><tr><th>Sapma</th><th>Geriye Dönük 24 Saatlik Aralık</th><th>24h MKT</th><th>Durum</th></tr></thead>
+                        <tbody>
+                            ${problem.map(w => rowHtml(w, true)).join('')}
+                            ${ok.length > 0 ? `
+                            <tr>
+                                <td colspan="4" style="padding:0;border:none">
+                                    <details class="compliance-accordion">
+                                        <summary class="accordion-trigger">
+                                            <span>✓ Sorunsuz kontroller (${ok.length})</span>
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                                        </summary>
+                                        <table class="data-table" style="margin-top:0;border-radius:0;background:rgba(0,0,0,0.05)">
+                                            <tbody>${ok.map(w => rowHtml(w, false)).join('')}</tbody>
+                                        </table>
+                                    </details>
+                                </td>
+                            </tr>` : ''}
+                        </tbody>
+                    </table>
+                </div>`;
+        }
+
+        return `
+        <div class="card retrospective-mkt-details" style="margin-top:20px">
+            <div class="card-header">
+                <h3 class="card-title">MKT Kontrol (Geriye Dönük)</h3>
+                <div class="chip ${badgeClass}">${badgeText}</div>
+            </div>
+            ${body}
+            <div style="margin-top:14px;font-size:0.8rem;color:var(--text-secondary);padding:12px;background:rgba(255,255,255,0.3);border-radius:8px">
+                <strong>Yöntem:</strong> Sıcaklık ${lower}-${upper}°C aralığının dışına <strong>her çıktığında (istisnasız)</strong>, sapmanın düzeldiği andan geriye doğru 24 saatlik MKT hesaplanır. Bu pencerenin MKT'si ${lower}-${upper}°C dışında ise ilgili aralık hatalı olarak bildirilir.
+            </div>
+        </div>`;
+    },
+
     render() {
         const page = document.getElementById('page-analysis');
         const a = AppState.currentAnalysis;
@@ -552,6 +656,8 @@ const AnalysisPage = {
                 <strong>Not:</strong> 0°C altı veya 25°C üstü anlık red sebebidir. 1-2°C veya 15-25°C arası durumlarda düzelme zamanından geriye dönük 24 saatlik MKT 2-8°C aralığında olmalıdır. Diğer küçük sapmalar (örn. 8.1°C) gözardı edilir.
             </div>
         </div>
+
+        ${this.renderRetrospectiveMKT(a)}
 
         <div class="analysis-actions">
             <button class="btn btn-primary btn-lg" onclick="AnalysisPage.saveToDB()" id="btn-save-db">💾 Sisteme Kaydet</button>
