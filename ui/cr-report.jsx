@@ -3,7 +3,8 @@
   const { CCIcons: Ic, CRShell, CCScenarios, CRPrintDoc, CRExportExcel, CCStore, CCPipeline } = window;
 
   const RP_CSS = `
-  .rp-g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;align-items:start;}
+  .rp-g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;align-items:stretch;}
+  .rp-g2 > .cr-pn{display:flex;flex-direction:column;}
   .rp-meta{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--ln);border:1px solid var(--ln);border-radius:9px;overflow:hidden;}
   .rp-mi{background:var(--pn);padding:11px 14px;}
   .rp-miL{font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:var(--t3);font-weight:600;margin-bottom:4px;}
@@ -68,6 +69,7 @@
     const m = decMeta[S.decision] || decMeta.conditional;
     const conf = S.conf;
     const tir = S.tir;
+    const retro = window.CCRetro ? window.CCRetro(S) : null;
     const stat = (label, val, lim, ok) => ({ label, val, lim, ok });
     const stats = [
       stat('MKT (Ortalama Kinetik)', S.mkt.toFixed(2) + '°C', lo.toFixed(2) + ' – ' + hi.toFixed(2) + '°C', S.mkt >= lo && S.mkt <= hi),
@@ -128,14 +130,14 @@
           {/* Analiz özeti */}
           <div className="cr-pn" style={{ borderLeft: '3px solid ' + m.c }}>
             <div className="cr-ph"><div className="cr-pt"><Ic.activity size={15} style={{ color: 'var(--sig)' }} /> ANALİZ ÖZETİ</div></div>
-            <div style={{ padding: 18 }}>
+            <div style={{ padding: 18, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12 }}>
-                <span style={{ fontSize: 22, fontWeight: 700, color: m.c }}>{m.t1}</span>
-                <span style={{ fontSize: 12.5, color: 'var(--t2)' }}>· <b className="cr-m" style={{ color: m.c }}>%{conf}</b> güven</span>
+                <span style={{ fontSize: 27, fontWeight: 700, color: m.c }}>{m.t1}</span>
+                <span style={{ fontSize: 14, color: 'var(--t2)' }}>· <b className="cr-m" style={{ color: m.c }}>%{conf}</b> güven</span>
               </div>
-              <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--tx)', marginBottom: 14 }}>{S.summary}</div>
+              <div style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--tx)', marginBottom: 16 }}>{S.summary}</div>
               <div className="rp-tirRow" style={{ marginBottom: 0 }}>
-                {S.reasons.map((r, i) => <div key={i} style={{ fontSize: 12, color: 'var(--t2)', padding: '6px 0 6px 12px', borderLeft: '2px solid ' + m.c, marginBottom: 6, lineHeight: 1.4 }}>{r}</div>)}
+                {S.reasons.map((r, i) => <div key={i} style={{ fontSize: 13, color: 'var(--t2)', padding: '7px 0 7px 12px', borderLeft: '2px solid ' + m.c, marginBottom: 7, lineHeight: 1.5 }}>{r}</div>)}
               </div>
             </div>
           </div>
@@ -158,30 +160,54 @@
           </table>
         </div>
 
-        {/* Güvenlik + ısı maruziyeti */}
-        <div className="rp-g2">
-          <div className="cr-pn">
-            <div className="cr-ph"><div className="cr-pt"><Ic.shield size={15} style={{ color: 'var(--sig)' }} /> VERİ BÜTÜNLÜĞÜ & GÜVENLİK</div></div>
-            <div style={{ padding: 18 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 14 }}>
-                <div className="rp-conf cr-m" style={{ color: conf > 80 ? 'var(--ok)' : 'var(--amber)' }}>%{conf}</div>
-                <div style={{ fontSize: 11.5, color: 'var(--t2)', lineHeight: 1.5 }}><b style={{ color: 'var(--tx)' }}>Anti-Fraud skoru</b> — standart sapma, veri manipülasyonu, PDF kalıp bütünlüğü ve boşluk analizine göre yapay zeka tarafından hesaplandı.</div>
+        {/* MKT Kontrol (Geriye Dönük) */}
+        {retro && (
+          <div className="cr-pn" style={{ marginBottom: 16, overflow: 'hidden' }}>
+            <div className="cr-ph">
+              <div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> MKT KONTROL (GERİYE DÖNÜK)</div>
+              <span className="an-st" style={{ color: retro.hasProblem ? 'var(--bad)' : 'var(--ok)', background: 'transparent' }}>
+                <i style={{ width: 5, height: 5, borderRadius: '50%', background: retro.hasProblem ? 'var(--bad)' : 'var(--ok)' }} />
+                {retro.hasProblem ? retro.problemCount + ' HATALI ARALIK' : 'SORUN BULUNAMADI'}
+              </span>
+            </div>
+            {!retro.triggered ? (
+              <div style={{ padding: 18, fontSize: 12.5, color: 'var(--t2)' }}>
+                <b style={{ color: 'var(--ok)' }}>Sorun bulunamadı</b> — sıcaklık hiçbir noktada {lo}–{hi}°C aralığının dışına çıkmadı; geriye dönük 24 saatlik MKT kontrolü gerekmedi.
               </div>
-              {[['Cihaz pil / sensör bütünlüğü', 'Sağlam'], ['Harici uygulama düzenlemesi', 'Saptanmadı'], ['Doğal dalgalanma sapması', 'Uygun']].map(([l, v]) => (
-                <div key={l} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '7px 0', borderTop: '1px solid var(--ln)' }}><span style={{ color: 'var(--t2)' }}>{l}</span><span style={{ color: 'var(--ok)', fontWeight: 600 }}>✓ {v}</span></div>))}
+            ) : !retro.hasProblem ? (
+              <div style={{ padding: 18, fontSize: 12.5, color: 'var(--t2)' }}>
+                <b style={{ color: 'var(--ok)' }}>Sorun bulunamadı</b> — tespit edilen {retro.excursionCount} sapma için düzelme anından geriye 24 saatlik MKT hesaplandı ve tümü {lo}–{hi}°C aralığında kaldı.
+              </div>
+            ) : (
+              <table className="cr-t">
+                <thead><tr>{['Sapma', 'Geriye Dönük 24 Saatlik Aralık', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {retro.windows.map((w, i) => (
+                    <tr key={i} style={{ cursor: 'default' }}>
+                      <td style={{ color: 'var(--t2)' }}>{w.type === 'high' ? 'Yüksek' : 'Düşük'} · {w.peak}°C</td>
+                      <td className="cr-m" style={{ color: 'var(--t2)' }}>{w.range}</td>
+                      <td className="cr-m" style={{ fontWeight: 600, color: w.isOk ? 'var(--tx)' : 'var(--bad)' }}>{w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
+                      <td><span className="an-st" style={{ color: w.isOk ? 'var(--ok)' : 'var(--bad)', background: 'transparent', padding: 0 }}><i style={{ width: 5, height: 5, borderRadius: '50%', background: w.isOk ? 'var(--ok)' : 'var(--bad)' }} />{w.isOk ? 'UYGUN' : 'İHLAL'}</span></td>
+                    </tr>))}
+                </tbody>
+              </table>
+            )}
+            <div style={{ padding: '12px 18px', borderTop: '1px solid var(--ln)', fontSize: 11, color: 'var(--t3)', lineHeight: 1.5 }}>
+              <b>Yöntem:</b> Sıcaklık {lo}–{hi}°C aralığının dışına <b>her çıktığında (istisnasız)</b>, sapmanın düzeldiği andan geriye doğru 24 saatlik MKT hesaplanır. Bu pencerenin MKT'si {lo}–{hi}°C dışındaysa ilgili aralık hatalı olarak bildirilir.
             </div>
           </div>
+        )}
 
-          <div className="cr-pn">
-            <div className="cr-ph"><div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> ISI MARUZİYET DAĞILIMI</div></div>
-            <div style={{ padding: 18 }}>
-              {[['İdeal · 2–8°C', tir.ideal, 'var(--ok)'], ['Hafif ihlal · 0–2 / 8–15°C', tir.warn, 'var(--amber)'], ['Kritik · <0 / >15°C', tir.crit, 'var(--bad)']].map(([l, v, c]) => (
-                <div key={l} className="rp-tirRow">
-                  <div className="rp-tirL"><span style={{ color: 'var(--t2)' }}>{l}</span><b className="cr-m" style={{ color: c }}>%{v}</b></div>
-                  <div className="rp-bar"><div className="rp-barf" style={{ width: v + '%', background: c }} /></div>
-                </div>))}
-              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 6 }}>Cihaz sensörünün ölçüm süresi boyunca bulunduğu sıcaklık dilimleri.</div>
+        {/* Veri bütünlüğü & güvenlik */}
+        <div className="cr-pn" style={{ marginBottom: 16 }}>
+          <div className="cr-ph"><div className="cr-pt"><Ic.shield size={15} style={{ color: 'var(--sig)' }} /> VERİ BÜTÜNLÜĞÜ & GÜVENLİK</div></div>
+          <div style={{ padding: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 14 }}>
+              <div className="rp-conf cr-m" style={{ color: conf > 80 ? 'var(--ok)' : 'var(--amber)' }}>%{conf}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--t2)', lineHeight: 1.5 }}><b style={{ color: 'var(--tx)' }}>Anti-Fraud skoru</b> — standart sapma, veri manipülasyonu, PDF kalıp bütünlüğü ve boşluk analizine göre yapay zeka tarafından hesaplandı.</div>
             </div>
+            {[['Cihaz pil / sensör bütünlüğü', 'Sağlam'], ['Harici uygulama düzenlemesi', 'Saptanmadı'], ['Doğal dalgalanma sapması', 'Uygun']].map(([l, v]) => (
+              <div key={l} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '7px 0', borderTop: '1px solid var(--ln)' }}><span style={{ color: 'var(--t2)' }}>{l}</span><span style={{ color: 'var(--ok)', fontWeight: 600 }}>✓ {v}</span></div>))}
           </div>
         </div>
 
@@ -234,6 +260,23 @@
               <div className="rp-sigLine" />
               <div className="rp-sigSub">İmza / Kaşe</div>
             </div>
+          </div>
+        </div>
+
+        {/* EK · Isı maruziyet dağılımı (ısı sapmaları) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '20px 0 12px' }}>
+          <span style={{ fontSize: 9, letterSpacing: '1px', textTransform: 'uppercase', fontWeight: 700, color: 'var(--t3)', border: '1px solid var(--ln)', borderRadius: 4, padding: '3px 9px' }}>EK · Isı Sapmaları</span>
+          <span style={{ flex: 1, height: 1, background: 'var(--ln)' }} />
+        </div>
+        <div className="cr-pn" style={{ marginBottom: 16 }}>
+          <div className="cr-ph"><div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> ISI MARUZİYET DAĞILIMI</div></div>
+          <div style={{ padding: 18 }}>
+            {[['İdeal · 2–8°C', tir.ideal, 'var(--ok)'], ['Hafif ihlal · 0–2 / 8–15°C', tir.warn, 'var(--amber)'], ['Kritik · <0 / >15°C', tir.crit, 'var(--bad)']].map(([l, v, c]) => (
+              <div key={l} className="rp-tirRow">
+                <div className="rp-tirL"><span style={{ color: 'var(--t2)' }}>{l}</span><b className="cr-m" style={{ color: c }}>%{v}</b></div>
+                <div className="rp-bar"><div className="rp-barf" style={{ width: v + '%', background: c }} /></div>
+              </div>))}
+            <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 6 }}>Cihaz sensörünün ölçüm süresi boyunca bulunduğu sıcaklık dilimleri.</div>
           </div>
         </div>
 

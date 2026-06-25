@@ -97,6 +97,7 @@ function initDB() {
                 brand TEXT,
                 producer TEXT,
                 header_tokens TEXT,
+                row_signature TEXT,
                 schema TEXT NOT NULL,
                 source TEXT,
                 use_count INTEGER DEFAULT 0,
@@ -108,6 +109,12 @@ function initDB() {
             else {
                 console.log('[OK] format_templates tablosu hazir.');
                 db.run(`CREATE INDEX IF NOT EXISTS idx_format_templates_kind ON format_templates(kind)`);
+                // Migrasyon: eski veritabanlarinda row_signature kolonu yoksa ekle
+                // (basliksiz devam sayfalarinin yapisal eslesmesi icin gerekli).
+                // Kolon zaten varsa SQLite hata verir; bilincli olarak yutulur.
+                db.run(`ALTER TABLE format_templates ADD COLUMN row_signature TEXT`, (aErr) => {
+                    if (!aErr) console.log('[OK] format_templates.row_signature kolonu eklendi (migrasyon).');
+                });
             }
         });
 
@@ -353,6 +360,7 @@ function rowToTemplate(r) {
         brand: r.brand || '',
         producer: r.producer || '',
         headerTokens,
+        rowSignature: r.row_signature || '',
         schema,
         source: r.source || '',
         useCount: r.use_count || 0,
@@ -387,12 +395,13 @@ function findTemplateByFingerprint(fingerprint) {
  * Sablon kaydet/guncelle. Ayni fingerprint tekrar gelirse sema ve etiket
  * tazelenir (kullanici eslestirmeyi duzeltmis olabilir); use_count korunur.
  */
-function saveTemplate({ fingerprint, kind, brand, producer, headerTokens, schema, source }) {
+function saveTemplate({ fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, source }) {
     return new Promise((resolve, reject) => {
         if (!fingerprint || !kind || !schema) {
             return reject(new Error('fingerprint, kind ve schema zorunlu'));
         }
         const tokensJson = JSON.stringify(headerTokens || []);
+        const rowSig = rowSignature || '';
         const schemaJson = typeof schema === 'string' ? schema : JSON.stringify(schema);
         db.get(`SELECT id FROM format_templates WHERE fingerprint = ?`, [fingerprint], (err, row) => {
             if (err) return reject(err);
@@ -400,17 +409,18 @@ function saveTemplate({ fingerprint, kind, brand, producer, headerTokens, schema
                 db.run(
                     `UPDATE format_templates
                      SET schema = ?, header_tokens = ?, producer = ?, source = ?,
+                         row_signature = CASE WHEN ? != '' THEN ? ELSE row_signature END,
                          brand = CASE WHEN ? != '' THEN ? ELSE brand END
                      WHERE id = ?`,
                     [schemaJson, tokensJson, producer || '', source || '',
-                     brand || '', brand || '', row.id],
+                     rowSig, rowSig, brand || '', brand || '', row.id],
                     (uErr) => uErr ? reject(uErr) : resolve({ id: row.id, updated: true })
                 );
             } else {
                 db.run(
-                    `INSERT INTO format_templates (fingerprint, kind, brand, producer, header_tokens, schema, source)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                    [fingerprint, kind, brand || '', producer || '', tokensJson, schemaJson, source || ''],
+                    `INSERT INTO format_templates (fingerprint, kind, brand, producer, header_tokens, row_signature, schema, source)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [fingerprint, kind, brand || '', producer || '', tokensJson, rowSig, schemaJson, source || ''],
                     function (iErr) {
                         if (iErr) reject(iErr);
                         else resolve({ id: this.lastID, updated: false });

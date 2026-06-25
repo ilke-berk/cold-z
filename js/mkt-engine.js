@@ -257,6 +257,99 @@ const MKTEngine = {
     },
 
     /**
+     * Geriye Dönük 24 Saatlik MKT Kontrolü (İSTİSNASIZ)
+     *
+     * Sıcaklık, kabul aralığının (varsayılan 2-8°C) DIŞINA her çıktığında —
+     * düşük/yüksek, kritik/hafif fark etmeksizin, İSTİSNASIZ — sapmanın
+     * düzeldiği (ya da son okunan) andan geriye doğru 24 saatlik pencerenin
+     * MKT'sini hesaplar. Pencere MKT'si 2-8 dışındaysa o aralık "hatalı"
+     * olarak işaretlenir ve raporlanır.
+     *
+     * analyzeCompliance'tan farkı: orada MKT yalnızca 0-2 / 8-15 bantları için
+     * hesaplanır ve <0 / >15 kritik sapmalarda atlanır. Burada hiçbir istisna
+     * yoktur; 2-8 dışı her sapma için geriye dönük MKT hesaplanır.
+     *
+     * @param {Array} data - [{timestamp, temperature}] (kronolojik sıralı)
+     * @param {number} lowerLimit - Alt limit (°C)
+     * @param {number} upperLimit - Üst limit (°C)
+     * @returns {object} { triggered, hasProblem, problemCount, excursionCount, windows[] }
+     */
+    retrospectiveMKTCheck(data, lowerLimit = 2, upperLimit = 8) {
+        const toMs = (t) => (t instanceof Date ? t.getTime() : new Date(t).getTime());
+        const windows = [];
+
+        if (!data || data.length === 0) {
+            return { triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows };
+        }
+
+        // 1. Kabul aralığı dışındaki tüm ardışık segmentleri bul (istisnasız)
+        const segments = [];
+        let cur = null;
+        for (let i = 0; i < data.length; i++) {
+            const t = data[i].temperature;
+            const isOut = t < lowerLimit || t > upperLimit;
+            if (isOut) {
+                if (!cur) cur = { start: i, end: i };
+                else cur.end = i;
+            } else if (cur) {
+                segments.push(cur);
+                cur = null;
+            }
+        }
+        if (cur) segments.push(cur);
+
+        // 2. Her sapma için düzelme anından geriye doğru 24 saatlik MKT
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        for (const seg of segments) {
+            const anchorMs = toMs(data[seg.end].timestamp); // düzelme / son okuma anı
+            const windowStartMs = anchorMs - DAY_MS;
+
+            const windowData = data.filter(d => {
+                const ms = toMs(d.timestamp);
+                return ms >= windowStartMs && ms <= anchorMs;
+            });
+            const windowTemps = windowData.map(d => d.temperature);
+            const mktInfo = this.calculate(windowTemps);
+
+            const isOk = mktInfo.mkt != null && mktInfo.mkt >= lowerLimit && mktInfo.mkt <= upperLimit;
+
+            const segTemps = data.slice(seg.start, seg.end + 1).map(p => p.temperature);
+            const segMin = Math.min(...segTemps);
+            const segMax = Math.max(...segTemps);
+            const type = segMax > upperLimit ? 'high' : 'low';
+            const peakTemp = type === 'high' ? segMax : segMin;
+
+            // Pencerenin gerçekte ne kadarı dolu (saat) — eksik veride güveni düşürür
+            let coverageHours = 0;
+            if (windowData.length > 1) {
+                coverageHours = (toMs(windowData[windowData.length - 1].timestamp) - toMs(windowData[0].timestamp)) / 3600000;
+            }
+
+            windows.push({
+                excursionStart: data[seg.start].timestamp,
+                excursionEnd: data[seg.end].timestamp,
+                type,
+                peakTemp: parseFloat(peakTemp.toFixed(1)),
+                windowStart: windowData[0]?.timestamp || new Date(windowStartMs),
+                windowEnd: data[seg.end].timestamp,
+                mkt24h: mktInfo.mkt,
+                isOk,
+                sampleCount: windowTemps.length,
+                coverageHours: parseFloat(coverageHours.toFixed(1))
+            });
+        }
+
+        const problemWindows = windows.filter(w => !w.isOk);
+        return {
+            triggered: segments.length > 0,
+            hasProblem: problemWindows.length > 0,
+            problemCount: problemWindows.length,
+            excursionCount: segments.length,
+            windows
+        };
+    },
+
+    /**
      * TOR (Time Out of Refrigeration) hesapla
      */
     calculateTOR(data, lowerLimit = 2, upperLimit = 8) {
@@ -325,6 +418,9 @@ const MKTEngine = {
         // Yeni Compliance Analizi
         const compliance = this.analyzeCompliance(data);
 
+        // Geriye Dönük 24h MKT Kontrolü (istisnasız — 2-8 dışı her sapma için)
+        const retrospectiveMKT = this.retrospectiveMKTCheck(data, lowerLimit, upperLimit);
+
         // Zaman Boşluğu Analizi (Gaps)
         let validationResult;
 
@@ -380,6 +476,7 @@ const MKTEngine = {
             excursions: excursionResult,
             tor: stabilityBudget,
             compliance,
+            retrospectiveMKT,
             validation: validationResult,
             resampling: externalValidation?.resampling || null,
             config: { lowerLimit, upperLimit, torLimit },

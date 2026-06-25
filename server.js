@@ -72,7 +72,17 @@ const upload = multer({
 });
 
 // ─── Statik dosya sunumu ────────────────────────────────────
-app.use(express.static(path.join(__dirname), { index: 'app.html' }));
+// Geliştirme: kaynak dosyaları (.html/.js/.jsx) cache'leme — kod değişikliği
+// tarayıcıyı yenileyince anında yansısın (eski cache'lenmiş JSX sorununu önler).
+app.use(express.static(path.join(__dirname), {
+    index: 'app.html',
+    etag: false,
+    setHeaders: (res, filePath) => {
+        if (/\.(html|jsx?|css)$/i.test(filePath)) {
+            res.setHeader('Cache-Control', 'no-store, must-revalidate');
+        }
+    },
+}));
 app.use(express.json({ limit: '20mb' }));
 
 // ─── BÖLÜM: CORS Eklemesi (Electron file:// protokolü için)
@@ -1065,17 +1075,20 @@ app.post('/api/device-serial', async (req, res) => {
 
 app.post('/api/templates/match', async (req, res) => {
     try {
-        const { fingerprint, headerTokens, producer, kind, brandHint } = req.body || {};
+        const { fingerprint, headerTokens, rowSignature, producer, kind, brandHint } = req.body || {};
         if (!fingerprint) {
             return res.status(400).json({ success: false, error: 'fingerprint zorunlu.' });
         }
         const templates = await db.listTemplates(kind || null);
         const result = FormatFingerprint.matchTemplate(templates, {
-            fingerprint, headerTokens, producer, kind, brandHint
+            fingerprint, headerTokens, rowSignature, producer, kind, brandHint
         });
         if (result.match === 'exact') {
             db.touchTemplate(result.template.id).catch(() => {});
             console.log(`[SABLON] Kesin eslesme: #${result.template.id} ${result.template.brand || '(etiketsiz)'}${result.brandConflict ? ' [MARKA CELISKISI -> insan kuyrugu]' : ''}`);
+        } else if (result.match === 'structural') {
+            db.touchTemplate(result.template.id).catch(() => {});
+            console.log(`[SABLON] Yapisal eslesme (satir deseni): #${result.template.id} ${result.template.brand || '(etiketsiz)'} -> ayni belge ailesi, otomatik uygulanir${result.brandConflict ? ' [MARKA CELISKISI -> insan kuyrugu]' : ''}`);
         } else if (result.match === 'fuzzy') {
             console.log(`[SABLON] Bulanik aday: #${result.template.id} ${result.template.brand || '(etiketsiz)'} (%${Math.round(result.similarity * 100)} benzer) -> onaysiz uygulanmaz`);
         }
@@ -1088,11 +1101,11 @@ app.post('/api/templates/match', async (req, res) => {
 
 app.post('/api/templates', async (req, res) => {
     try {
-        const { fingerprint, kind, brand, producer, headerTokens, schema, source, user } = req.body || {};
+        const { fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, source, user } = req.body || {};
         if (!fingerprint || !kind || !schema) {
             return res.status(400).json({ success: false, error: 'fingerprint, kind ve schema zorunlu.' });
         }
-        const saved = await db.saveTemplate({ fingerprint, kind, brand, producer, headerTokens, schema, source });
+        const saved = await db.saveTemplate({ fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, source });
         console.log(`[SABLON] ${saved.updated ? 'Guncellendi' : 'Kaydedildi'}: #${saved.id} ${brand || '(etiketsiz)'} · ${kind} · kaynak: ${source || '?'}`);
         db.addAuditEntry({
             type: 'template',

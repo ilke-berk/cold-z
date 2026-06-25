@@ -30,6 +30,35 @@ window.CCPipeline = (function () {
   // Motor karar kodu → UI karar kodu/etiketi
   const LABELS = { accept: 'KABUL', reject: 'RED', revize: 'REVİZE', conditional: 'ŞARTLI' };
 
+  // ---- Geriye Dönük 24h MKT Kontrolü (UI) ----
+  // Senaryonun sıcaklık serisi (S.temp = [{t,v}]) üzerinden, kabul bandı
+  // dışına her çıkışta (İSTİSNASIZ) düzelme anından geriye 24 saatlik MKT'yi
+  // hesaplar. Hem gerçek analiz hem demo senaryolarda aynı şekilde çalışır;
+  // localStorage'daki Date serileştirme sorununu da atlatır (ms → yeniden Date).
+  function buildRetro(S) {
+    const lo = Number(S && S.lo) || 2, hi = Number(S && S.hi) || 8;
+    const series = ((S && S.temp) || [])
+      .map(p => ({ timestamp: new Date(p.t), temperature: p.v }))
+      .filter(p => isFinite(p.timestamp.getTime()) && isFinite(p.temperature))
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    const r = (window.MKTEngine && MKTEngine.retrospectiveMKTCheck)
+      ? MKTEngine.retrospectiveMKTCheck(series, lo, hi)
+      : { triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows: [] };
+
+    const windows = (r.windows || []).map(w => ({
+      type: w.type,
+      peak: w.peakTemp,
+      mkt24h: w.mkt24h,
+      isOk: w.isOk,
+      coverageH: w.coverageHours,
+      range: fmtDT(w.windowStart) + ' → ' + fmtDT(w.windowEnd),
+    }));
+
+    return { triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, excursionCount: r.excursionCount, windows, lo, hi };
+  }
+  window.CCRetro = buildRetro;
+
   // ---- Engine çıktısı → UI "scenario" şekli ----
   function toScenario(record, data, form, cfg) {
     const a = record;
@@ -319,7 +348,9 @@ window.CCPipeline = (function () {
       const p = parsed[i];
       const ext = p && p.metadata && p.metadata.extraction;
       if (!ext || !ext.fingerprint || !ext.fingerprint.hash || !ext.schema) continue;
-      if (ext.template && ext.template.match === 'exact') continue;
+      // Kesin (hash) ve yapısal (satır-deseni) eşleşme zaten hafızadaki bir
+      // şablon ailesine işaret eder → yeniden kaydedilmez.
+      if (ext.template && (ext.template.match === 'exact' || ext.template.match === 'structural')) continue;
       if (optOut[files[i].id]) continue;
       fetch('/api/templates', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -327,6 +358,7 @@ window.CCPipeline = (function () {
           fingerprint: ext.fingerprint.hash,
           kind: ext.fingerprint.kind || 'pdf',
           headerTokens: ext.fingerprint.headerTokens || [],
+          rowSignature: ext.fingerprint.rowSignature || '',
           producer: ext.fingerprint.producer || '',
           brand: ext.fingerprint.brandDetected || ext.schema.deviceBrand || (p.metadata.deviceBrand || ''),
           schema: ext.schema,
@@ -360,5 +392,5 @@ window.CCPipeline = (function () {
   function recent() { return fetch('/api/recent-analyses').then(r => r.json()); }
   function stats() { return fetch('/api/stats').then(r => r.json()); }
 
-  return { run, toScenario, save, health, recent, stats, postAudit };
+  return { run, toScenario, save, health, recent, stats, postAudit, buildRetro };
 })();
