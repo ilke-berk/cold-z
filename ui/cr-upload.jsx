@@ -497,11 +497,20 @@
           {
             approvedIds: Object.keys(effectiveApprovals).filter(id => effectiveApprovals[id]),
             parseCache: parseCacheRef.current,
-            // "formatı hatırla" kapatılan dosyalar şablon hafızasına yazılmaz
-            templateOptOut: Object.keys(remember).reduce((acc, id) => {
-              if (remember[id] === false) acc[id] = true;
-              return acc;
-            }, {}),
+            // "formatı hatırla" kapatılan dosyalar şablon hafızasına yazılmaz.
+            // Faz 7: doğrulama/kanıt faktörüyle incelemeye düşen belgelerde
+            // varsayılan da "hatırlama" — kullanıcı kutuyu açıkça işaretlemedikçe.
+            templateOptOut: (() => {
+              const out = {};
+              Object.keys(remember).forEach(id => { if (remember[id] === false) out[id] = true; });
+              (review || []).forEach(rev => {
+                if (remember[rev.id] === undefined &&
+                    (rev.factors || []).some(fa => fa.factor === 'ai-dogrulama' || fa.factor === 'kanit-kontrolu')) {
+                  out[rev.id] = true;
+                }
+              });
+              return out;
+            })(),
           }
         );
         if (out.needsReview) {
@@ -889,9 +898,11 @@
                   <div>
                     <div className="up-revTitle">İNSAN ONAYI GEREKLİ — ANALİZ BEKLETİLİYOR</div>
                     <div className="up-revSub">
-                      Aşağıdaki belgelerde çıkarım güveni eşiğin altında veya tarih formatı belirsiz.
+                      Aşağıdaki belgelerde çıkarım güveni eşiğin altında, tarih formatı belirsiz veya doğrulama
+                      denetimleri (kanıt kontrolü / AI hakem) uyuşmazlık buldu.
                       Örneklem belgenin <b>başından, ortasından ve sonundan</b> alınmıştır — tarih sırası, gün/ay düzeni ve
-                      sıcaklık değerlerinin makul olduğunu kontrol edin. Gerekirse 1. adımdan sütun eşleştirmeyi düzeltin.
+                      sıcaklık değerlerinin makul olduğunu kontrol edin. AI'nın ham satırdan okuduğu öneriler varsa
+                      ızgarada "AI Önerisi" sütununda tek tıkla uygulanabilir. Gerekirse 1. adımdan sütun eşleştirmeyi düzeltin.
                       Her onay denetim kaydına (audit log) yazılır.
                     </div>
                   </div>
@@ -922,9 +933,14 @@
                         const fl = files.find(x => x.id === rev.id);
                         const canRemember = fl && fl.fingerprint && (!fl.templateMatch || (fl.templateMatch.match !== 'exact' && fl.templateMatch.match !== 'structural'));
                         if (!canRemember || ok) return null;
+                        // Faz 7: belge doğrulama/kanıt faktörüyle incelemeye düştüyse
+                        // şüpheli şemayı hatırlamak varsayılan DEĞİLDİR — kullanıcı
+                        // düzelttikten sonra bilerek işaretleyebilir.
+                        const verFlagged = (rev.factors || []).some(fa => fa.factor === 'ai-dogrulama' || fa.factor === 'kanit-kontrolu');
+                        const checked = remember[rev.id] !== undefined ? !!remember[rev.id] : !verFlagged;
                         return (
                           <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 9, fontSize: 11.5, color: 'var(--t2)', cursor: 'pointer' }}>
-                            <input type="checkbox" checked={remember[rev.id] !== false}
+                            <input type="checkbox" checked={checked}
                               onChange={e => setRemember(s => ({ ...s, [rev.id]: e.target.checked }))} />
                             Bu cihaz formatını hatırla — aynı düzendeki sonraki belgeler AI'sız, anında çözülür
                           </label>
@@ -932,24 +948,39 @@
                       })()}
                       {/* Satır inceleme ızgarası (Faz 5 / Kademe 2): yalnızca işaretli
                           satırlar doğrulanır, belgenin tamamı değil. */}
-                      {!ok && rev.lowConfRows && rev.lowConfRows.length > 0 && (
+                      {!ok && rev.lowConfRows && rev.lowConfRows.length > 0 && (() => {
+                        const hasSuggest = rev.lowConfRows.some(r => r.suggested);
+                        return (
                         <div className={'up-lcWrap' + (pageImgs[rev.id] ? '' : ' noimg')}>
                           <div>
-                            <div className="up-lcTitle"><Ic.alert size={12} sw={2.4} /> DÜŞÜK GÜVENLİ SATIRLAR ({rev.lowConfRows.length}) — DEĞERİ KAYNAKLA KARŞILAŞTIRIP GEREKİRSE DÜZELTİN</div>
+                            <div className="up-lcTitle"><Ic.alert size={12} sw={2.4} /> İŞARETLİ SATIRLAR ({rev.lowConfRows.length}) — DEĞERİ KAYNAKLA KARŞILAŞTIRIP GEREKİRSE DÜZELTİN</div>
                             <div style={{ overflowX: 'auto', maxHeight: 320, overflowY: 'auto' }}>
                               <table className="up-lcTbl">
                                 <thead>
-                                  <tr><th>#</th><th>Tarih & Saat</th><th>Okunan</th><th>Güven</th><th>Düzeltme (°C)</th><th>Ham Satır</th><th title="Satırı analizden çıkar">Çıkar</th></tr>
+                                  <tr><th>#</th><th>Tarih & Saat</th><th>Okunan</th><th>Güven</th>{hasSuggest && <th title="AI doğrulamasının ham satırdan okuduğu değer">AI Önerisi</th>}<th>Düzeltme (°C)</th><th>Ham Satır</th><th title="Satırı analizden çıkar">Çıkar</th></tr>
                                 </thead>
                                 <tbody>
                                   {rev.lowConfRows.map(lr => {
                                     const e = (rowEdits[rev.id] || {})[lr.idx] || {};
+                                    const sugTemp = lr.suggested && typeof lr.suggested.temperature === 'number' ? lr.suggested.temperature : null;
                                     return (
-                                      <tr key={lr.idx} className={e.exclude ? 'exc' : ''}>
+                                      <tr key={lr.idx} className={e.exclude ? 'exc' : ''} title={lr.note || ''}>
                                         <td style={{ color: 'var(--t3)' }}>{lr.idx + 1}</td>
                                         <td style={{ whiteSpace: 'nowrap' }}>{lr.date}</td>
                                         <td>{lr.temp}°C</td>
-                                        <td><span className="up-lcConf">{Math.round(lr.conf * 100)}%</span></td>
+                                        <td>{typeof lr.conf === 'number' ? <span className="up-lcConf">{Math.round(lr.conf * 100)}%</span> : <span style={{ color: 'var(--t3)' }}>—</span>}</td>
+                                        {hasSuggest && (
+                                          <td style={{ whiteSpace: 'nowrap' }}>
+                                            {sugTemp !== null ? (
+                                              <button className="cr-btn" style={{ padding: '2px 8px', fontSize: 11 }}
+                                                title={(lr.note ? lr.note + ' — ' : '') + 'öneriyi düzeltme alanına yaz'}
+                                                disabled={!!e.exclude}
+                                                onClick={() => setRowEdits(s => ({ ...s, [rev.id]: { ...(s[rev.id] || {}), [lr.idx]: { ...e, temp: String(sugTemp) } } }))}>
+                                                {sugTemp}°C uygula
+                                              </button>
+                                            ) : <span style={{ color: 'var(--t3)' }}>—</span>}
+                                          </td>
+                                        )}
                                         <td>
                                           <input className={'up-lcInput' + (e.temp !== undefined && String(e.temp).trim() !== '' ? ' edited' : '')}
                                             placeholder={String(lr.temp)} value={e.temp !== undefined ? e.temp : ''}
@@ -982,7 +1013,8 @@
                             </div>
                           )}
                         </div>
-                      )}
+                        );
+                      })()}
                       {rev.sample && rev.sample.length > 0 && (
                         <div style={{ marginTop: 10, overflowX: 'auto' }}>
                           <div className="up-mapLabel" style={{ marginBottom: 4 }}>Baş / Orta / Son Örneklemi ({rev.sample.length} kayıt)</div>

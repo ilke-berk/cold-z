@@ -45,6 +45,10 @@ const ConfidenceScore = (function () {
     function compute(signals = {}) {
         const factors = [];
         let totalDeduction = 0;
+        // Sert kapı: skor ne olursa olsun insan incelemesi zorunlu.
+        // Felaket sınıfı sinyaller (kanıt yokluğu, bant ihlali, AI uyuşmazlığı)
+        // puan kesintisiyle geçiştirilemez — sessiz hata asla rapora ulaşmamalı.
+        let hardGate = false;
         const deduct = (factor, points, detail) => {
             const p = Math.min(100, Math.max(0, Math.round(points)));
             if (p > 0) {
@@ -102,8 +106,50 @@ const ConfidenceScore = (function () {
         if (temps.length > 0) {
             const inBand = temps.filter(t => t >= PLAUSIBLE_MIN && t <= PLAUSIBLE_MAX).length / temps.length;
             if (inBand < 0.9) {
+                // %10'dan fazla bant dışı değer felaket sinyalidir (yanlış şema,
+                // kesir kırpma...): kesinti yetmez, inceleme zorunlu.
+                // Not: meşru −30 altı (ultra soğuk) loggerlar için PLAUSIBLE_MIN
+                // genişletilmeli, kapı zayıflatılmamalı.
+                hardGate = true;
                 deduct('sicaklik-makullugu', Math.min(20, (0.9 - inBand) * 100),
-                    `Değerlerin yalnızca %${Math.round(inBand * 100)}'i ${PLAUSIBLE_MIN}…${PLAUSIBLE_MAX}°C bandında`);
+                    `Değerlerin yalnızca %${Math.round(inBand * 100)}'i ${PLAUSIBLE_MIN}…${PLAUSIBLE_MAX}°C bandında — zorunlu inceleme`);
+            }
+        }
+
+        // 5.5) Kanıt kontrolü (Tier 0): çıkarılan değer ham satırda bağımsız
+        // sayı olarak bulunamadıysa sistematik okuma hatası olabilir.
+        const ev = signals.evidence;
+        if (ev && ev.checked > 0) {
+            const evMissing = ev.missing && ev.missing.length !== undefined ? ev.missing.length : (ev.missing || 0);
+            const ratio = evMissing / ev.checked;
+            if (evMissing > 0) {
+                deduct('kanit-kontrolu', Math.min(40, ratio * 200),
+                    `${evMissing}/${ev.checked} satırın sıcaklığı ham satırda bağımsız sayı olarak bulunamadı — sistematik okuma hatası olabilir`);
+                if (evMissing >= 3 || ratio > 0.05) hardGate = true;
+            }
+            const tsOut = ev.temporalOutliers || 0;
+            if (tsOut > 0) {
+                deduct('zaman-tutarliligi', Math.min(15, (tsOut / base) * 100),
+                    `${tsOut} satırın zaman damgası belgenin kendi zaman dokusunun çok dışında — tarih okuma hatası olabilir`);
+                if (tsOut > 2) hardGate = true;
+            }
+        }
+
+        // 5.6) AI doğrulaması (Tier 1): örneklenen satırların LLM ile
+        // yeniden okunması. Uyuşmazlık → zorunlu inceleme; atlanmışsa
+        // (çevrimdışı) yalnızca bilgi faktörü.
+        const ver = signals.verification;
+        if (ver) {
+            if (ver.skipped) {
+                factors.push({ factor: 'ai-dogrulama', deduction: 0,
+                    detail: 'AI doğrulaması yapılamadı (sunucu/anahtar yok) — yalnız deterministik kontroller uygulandı' });
+            } else if (ver.checked > 0) {
+                const mm = Array.isArray(ver.mismatches) ? ver.mismatches.length : (ver.mismatches || 0);
+                if (mm > 0) {
+                    hardGate = true;
+                    deduct('ai-dogrulama', Math.min(30, (mm / ver.checked) * 100),
+                        `AI doğrulaması: örneklenen ${ver.checked} satırın ${mm}'i ham satırla uyuşmuyor — zorunlu inceleme`);
+                }
             }
         }
 
@@ -134,7 +180,8 @@ const ConfidenceScore = (function () {
         const score = Math.max(0, Math.min(100, 100 - totalDeduction));
         const needsReview = score < REVIEW_THRESHOLD
             || !!(df && df.ambiguous)
-            || !!signals.forceReview;
+            || !!signals.forceReview
+            || hardGate;
 
         return { score, threshold: REVIEW_THRESHOLD, needsReview, factors };
     }

@@ -933,6 +933,147 @@ app.post('/api/analyze-schema', upload.single('file'), async (req, res) => {
 });
 
 
+// ─── API: Satır Doğrulaması (Tier 1 — AI Hakem, Faz 7) ─────────────
+// Deterministik parse'ın örneklenmiş satırlarını Gemini'ye SADAKAT
+// denetimi için yeniden okutur: parsed değerler ham satırda gerçekten
+// öyle mi yazıyor? Metin-tabanlı (görüntü yok) → belge başına maliyet
+// kuruşun altında. Uyuşmazlıklar istemcide zorunlu incelemeye düşer.
+const VERIFY_MAX_ROWS = Math.min(50, Math.max(1, parseInt(process.env.VERIFY_MAX_ROWS || '20', 10) || 20));
+
+const VERIFY_RESPONSE_SCHEMA = {
+    type: 'OBJECT',
+    properties: {
+        verdicts: {
+            type: 'ARRAY',
+            items: {
+                type: 'OBJECT',
+                properties: {
+                    rowIndex: { type: 'INTEGER', description: 'İstekteki rowIndex aynen geri yazılır' },
+                    ok: { type: 'BOOLEAN', description: 'parsed değerler ham satıra sadık mı' },
+                    correctedDate: { type: 'STRING', description: 'GG.AA.YYYY — yalnız ok=false ise' },
+                    correctedTime: { type: 'STRING', description: 'HH:MM veya HH:MM:SS — yalnız ok=false ise' },
+                    correctedTemperature: { type: 'NUMBER', description: 'ham satırdan okunan doğru sıcaklık — yalnız ok=false ise' },
+                    note: { type: 'STRING', description: 'kısa Türkçe açıklama' }
+                },
+                required: ['rowIndex', 'ok']
+            }
+        }
+    },
+    required: ['verdicts']
+};
+
+const VERIFY_PROMPT = `Sen bir veri çıkarım denetçisisin. Sana JSON olarak satırlar verilecek: her satırda ham metin (rawText) ve otomatik sistemin çıkardığı değerler (parsed: date, time, temperature) var.
+
+GÖREVİN SADAKAT DENETİMİ: parsed değerler ham satırda gerçekten bu şekilde yazıyor mu?
+
+KURALLAR:
+1. Makullük yorumu YAPMA. Belge 128 diyorsa 128 doğrudur; senin işin belgeye sadakat, fizik değil.
+2. Önemsiz biçim farkları HATA DEĞİLDİR: ondalık virgül/nokta farkı (5,94 = 5.94), saniyenin atılması (00:04:09 → 00:04), baştaki sıfırlar (7 = 07), tarih ayracı farkı (02.07 = 02/07 = 02-07).
+3. Gerçek uyuşmazlıkta ok=false ver ve ham satırdan OKUDUĞUN doğru değeri corrected* alanlarına yaz (örn. rawText "5.94 °C" derken parsed temperature 94 ise → ok=false, correctedTemperature=5.94).
+4. rowIndex'i istekten aynen geri yaz, uydurma.
+5. Ham satırda birden çok sıcaklık varsa (dolap + ortam gibi), parsed sıcaklığın bunlardan HERHANGİ biriyle eşleşmesi yeterlidir; hiçbiriyle eşleşmiyorsa ok=false.
+6. Her istek satırı için tam bir verdict döndür.`;
+
+/**
+ * Doğrulama yanıtını saf olarak parse eder (test edilebilir).
+ * İstekte olmayan rowIndex'ler (halüsinasyon) elenir; virgüllü sayılar
+ * normalize edilir. verdicts dizisi yoksa fırlatır.
+ */
+function parseVerifyResponse(text, requestedIndices) {
+    let clean = String(text || '').trim()
+        .replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
+    if (!parsed || !Array.isArray(parsed.verdicts)) {
+        throw new Error('Doğrulama yanıtında verdicts dizisi yok');
+    }
+    const allowed = new Set((requestedIndices || []).map(Number));
+    const verdicts = [];
+    for (const v of parsed.verdicts) {
+        const idx = Number(v && v.rowIndex);
+        if (!Number.isInteger(idx)) continue;
+        if (allowed.size > 0 && !allowed.has(idx)) continue;
+        const verdict = { rowIndex: idx, ok: v.ok === true };
+        if (!verdict.ok) {
+            if (v.correctedDate) verdict.correctedDate = String(v.correctedDate);
+            if (v.correctedTime) verdict.correctedTime = String(v.correctedTime);
+            if (v.correctedTemperature !== undefined && v.correctedTemperature !== null && v.correctedTemperature !== '') {
+                const t = parseFloat(String(v.correctedTemperature).replace(',', '.'));
+                if (isFinite(t)) verdict.correctedTemperature = t;
+            }
+            if (v.note) verdict.note = String(v.note);
+        }
+        verdicts.push(verdict);
+    }
+    return { verdicts, mismatchCount: verdicts.filter(v => !v.ok).length };
+}
+
+app.post('/api/verify-rows', async (req, res) => {
+    if (process.env.VERIFY_ROWS_DISABLED === '1') {
+        return res.json({ success: false, disabled: true });
+    }
+    if (!genAI) {
+        return res.status(503).json({ success: false, error: 'Gemini API bağlantısı yok.' });
+    }
+    const rows = req.body && req.body.rows;
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ success: false, error: 'Doğrulanacak satır yok.' });
+    }
+
+    const payload = rows
+        .filter(r => r && typeof r.rawText === 'string' && r.rawText.trim() && r.parsed)
+        .slice(0, VERIFY_MAX_ROWS)
+        .map(r => ({ rowIndex: r.rowIndex, rawText: r.rawText, parsed: r.parsed }));
+    if (payload.length === 0) {
+        return res.status(400).json({ success: false, error: 'Doğrulanabilir (rawText içeren) satır yok.' });
+    }
+
+    try {
+        const startTime = Date.now();
+        const model = genAI.getGenerativeModel({
+            model: MODEL_NAME,
+            generationConfig: {
+                maxOutputTokens: 4096,
+                temperature: 0,
+                responseMimeType: 'application/json',
+                responseSchema: VERIFY_RESPONSE_SCHEMA
+            }
+        });
+
+        const body = JSON.stringify({ rows: payload, context: req.body.context || {} });
+        const result = await model.generateContent([VERIFY_PROMPT, body]);
+        const response = await result.response;
+        const { verdicts, mismatchCount } = parseVerifyResponse(response.text(), payload.map(r => r.rowIndex));
+
+        const usage = response.usageMetadata || {};
+        const inputTokens = usage.promptTokenCount || 0;
+        const outputTokens = usage.candidatesTokenCount || 0;
+        const inputCost = (inputTokens / 1_000_000) * PRICE_IN;
+        const outputCost = (outputTokens / 1_000_000) * PRICE_OUT;
+        const totalCost = inputCost + outputCost;
+        console.log(`[VERIFY] ${payload.length} satır denetlendi, ${mismatchCount} uyuşmazlık — ${inputTokens}+${outputTokens} token = $${totalCost.toFixed(6)} (${Date.now() - startTime}ms)`);
+
+        res.json({
+            success: true,
+            verdicts,
+            mismatchCount,
+            checkedCount: payload.length,
+            modelUsed: MODEL_NAME,
+            tokens: { input: inputTokens, output: outputTokens, total: inputTokens + outputTokens },
+            cost: {
+                input: parseFloat(inputCost.toFixed(6)),
+                output: parseFloat(outputCost.toFixed(6)),
+                total: parseFloat(totalCost.toFixed(6)),
+                totalTRY: parseFloat((totalCost * USD_TRY).toFixed(4))
+            }
+        });
+    } catch (err) {
+        console.error('[HATA] Satır doğrulama hatası:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
@@ -1187,6 +1328,7 @@ module.exports = {
     start,
     parseStructuredResponse,
     parseMarkdownResponse,
+    parseVerifyResponse,
     smartDateResolve,
     splitRawDate
 };

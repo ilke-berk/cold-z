@@ -215,7 +215,37 @@ window.CCPipeline = (function () {
               raw: x.row.rawText || '',
               page: x.row.page || null,
             }));
-          return { ...p, sample, rowCount: rows.length, lowConfRows };
+
+          // Faz 7: AI doğrulama uyuşmazlıkları + kanıt kontrolü kanıtsızları
+          // aynı düzenlenebilir ızgaraya iner (AI önerisi/not alanlarıyla).
+          // idx'ler postProcess-sonrası dizi indeksidir — rowEdits ile birebir.
+          const ext = (idx >= 0 && parsed[idx].metadata && parsed[idx].metadata.extraction) || {};
+          const flagged = new Map(lowConfRows.map(r => [r.idx, r]));
+          const pushFlag = (index, suggested, note) => {
+            if (typeof index !== 'number' || index < 0 || index >= rows.length) return;
+            let entry = flagged.get(index);
+            if (!entry) {
+              if (flagged.size >= 40) return;
+              const row = rows[index];
+              entry = {
+                idx: index,
+                date: fmtFullDT(row.timestamp),
+                temp: row.temperature,
+                conf: typeof row.confidence === 'number' ? row.confidence : null,
+                raw: row.rawText || '',
+                page: row.page || null,
+              };
+              flagged.set(index, entry);
+            }
+            if (suggested && entry.suggested === undefined) entry.suggested = suggested;
+            if (note && !entry.note) entry.note = note;
+          };
+          (((ext.verification || {}).mismatches) || []).forEach(m =>
+            pushFlag(m.rowIndex, m.suggested, m.note || 'AI doğrulaması: ham satırla uyuşmuyor'));
+          (((ext.evidence || {}).missingRows) || []).forEach(m =>
+            pushFlag(m.arrayIndex, undefined, 'Kanıt kontrolü: değer ham satırda bağımsız sayı olarak bulunamadı'));
+          const mergedLowConf = Array.from(flagged.values()).sort((a, b) => a.idx - b.idx);
+          return { ...p, sample, rowCount: rows.length, lowConfRows: mergedLowConf };
         });
         onStep({
           ic: 'alert', t: 'HITL_GATE',
@@ -352,6 +382,14 @@ window.CCPipeline = (function () {
       // şablon ailesine işaret eder → yeniden kaydedilmez.
       if (ext.template && (ext.template.match === 'exact' || ext.template.match === 'structural')) continue;
       if (optOut[files[i].id]) continue;
+      // Faz 7: doğrulamadan geçemeyen şema OTOMATİK yoldan hafızaya alınmaz —
+      // kötü şablonun "bilinen format" olarak kalıcılaşması engellenir.
+      // İnsan onayından geçen belge (hitl-onay) kaydedilebilir; onay ekranında
+      // "formatı hatırla" kutusu kullanıcının elindedir.
+      const failedVerification =
+        (ext.verification && Array.isArray(ext.verification.mismatches) && ext.verification.mismatches.length > 0)
+        || (ext.evidence && ext.evidence.missing >= 3);
+      if (failedVerification && !approved.has(files[i].id)) continue;
       fetch('/api/templates', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

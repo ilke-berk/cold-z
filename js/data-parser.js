@@ -418,6 +418,22 @@ const DataParser = {
     },
 
     /**
+     * Güven skorunu (yeniden) hesaplar — ADIM 8.5'in çekirdeği.
+     * Tier 1 (AI doğrulaması) postProcess'ten SONRA koştuğu için sonucu
+     * extraction'a yazdıktan sonra skoru bu yardımcıyla tazeler.
+     */
+    recomputeConfidence(data, metadata) {
+        const ext = metadata && metadata.extraction;
+        if (!ext || typeof ConfidenceScore === 'undefined') return null;
+        ext.parsedRows = data.length;
+        return ConfidenceScore.compute({
+            ...ext,
+            temperatures: data.map(d => d.temperature),
+            rowConfidences: data.map(d => (typeof d.confidence === 'number' ? d.confidence : 1))
+        });
+    },
+
+    /**
      * Ortak Post-Process Pipeline (Tüm veri kaynakları için: Excel, AI, CSV)
      */
     postProcess(data, log, metadata, options = { resampling: true }) {
@@ -459,18 +475,41 @@ const DataParser = {
             });
         }
 
+        // --- ADIM 8.4: Kanıt Kontrolü (Tier 0, Faz 7) ---
+        // Çıkarılan her değer ham satırına karşı denetlenir (bağımsız sayı
+        // tokeni testi) + zaman tutarlılığı. Sinyaller extraction bloğuna
+        // yazılır ve 8.5'teki güven skoruna spread ile iner. rawText'i
+        // olmayan kaynaklar (Excel/CSV) cezasız atlanır.
+        if (metadata && metadata.extraction && typeof EvidenceCheck !== 'undefined') {
+            const ev = EvidenceCheck.checkRows(data);
+            const tsChk = EvidenceCheck.checkTimestamps(data);
+            metadata.extraction.evidence = {
+                checked: ev.checked,
+                missing: ev.missing.length,
+                skippedNoRaw: ev.skippedNoRaw,
+                missingRows: ev.missing.slice(0, 40),
+                temporalOutliers: tsChk.outlierCount,
+                temporalOutlierRows: tsChk.outliers.slice(0, 40)
+            };
+            if (ev.missing.length > 0 || tsChk.outlierCount > 0) {
+                log.push({
+                    step: 'Kanıt Kontrolü',
+                    message: `${ev.missing.length}/${ev.checked} satırın değeri ham satırda bağımsız sayı olarak doğrulanamadı` +
+                        (tsChk.outlierCount > 0 ? `; ${tsChk.outlierCount} satırın zaman damgası belge dokusunun dışında` : '') + '.',
+                    icon: '🕵️', status: 'warning'
+                });
+            } else if (ev.checked > 0) {
+                log.push({ step: 'Kanıt Kontrolü', message: `${ev.checked} satırın tamamı ham satır kanıtıyla doğrulandı.`, icon: '🕵️', status: 'success' });
+            }
+        }
+
         // --- ADIM 8.5: Güven Skoru (IR doğrulayıcısı, Faz 2) ---
         // Resampling'den ÖNCE hesaplanır: resampling bilinçli seyreltmedir,
         // çıkarım kalitesi kaybı değildir.
         if (metadata && metadata.extraction && typeof ConfidenceScore !== 'undefined') {
             const ext = metadata.extraction;
             ext.dedupRemoved = (ext.dedupRemoved || 0) + dupCount;
-            ext.parsedRows = data.length;
-            ext.confidence = ConfidenceScore.compute({
-                ...ext,
-                temperatures: data.map(d => d.temperature),
-                rowConfidences: data.map(d => (typeof d.confidence === 'number' ? d.confidence : 1))
-            });
+            ext.confidence = this.recomputeConfidence(data, metadata);
             const c = ext.confidence;
             log.push({
                 step: 'Güven Skoru',
