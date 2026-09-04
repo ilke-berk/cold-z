@@ -37,14 +37,16 @@
      tek satırda gruplanır, tam liste EK-2'ye gider. */
   const stripIcon = s => String(s == null ? '' : s).replace(/^[\s\u{1F300}-\u{1FAFF}☀-➿⭐❌⚠️]+/u, '').trim();
   const softOf = hex => hex === '#cb3c48' ? '#fae7e8' : hex === '#b07d18' ? '#f7efd9' : '#f1f5f9';
+  // Not: JS'de /i bayrağı İ/ı harflerini eşlemez; Türkçe kelimeler nokta (.) ile yazıldı.
   function tagOf(text) {
-    if (/^KRİTİK/i.test(text)) return ['KRİTİK', '#cb3c48'];
-    if (/^RED SEBEBİ|^RED\b/i.test(text)) return ['RED', '#cb3c48'];
-    if (/ANTI-FRAUD/i.test(text)) return ['ANTI-FRAUD', '#cb3c48'];
-    if (/24h MKT .*limit dışı/i.test(text)) return ['MKT', '#cb3c48'];
+    if (/^kr.t.k/i.test(text)) return ['KRİTİK', '#cb3c48'];
+    if (/^red sebeb|^red\b/i.test(text)) return ['RED', '#cb3c48'];
+    if (/anti-fraud/i.test(text)) return ['ANTI-FRAUD', '#cb3c48'];
+    if (/24h MKT .*limit d.ş./i.test(text)) return ['MKT', '#cb3c48'];
     if (/24h MKT .*telafi edildi/i.test(text)) return ['MKT', '#b07d18'];
-    if (/^REVİZE/i.test(text)) return ['REVİZE', '#b07d18'];
-    if (/VERİ KAYBI|ATLANAN VERİ/i.test(text)) return ['VERİ', '#b07d18'];
+    if (/^rev.ze/i.test(text)) return ['REVİZE', '#b07d18'];
+    if (/ver. kayb|atlanan ver/i.test(text)) return ['VERİ', '#b07d18'];
+    if (/aş.ld.|limit d.ş.|ihlal/i.test(text)) return ['İHLAL', '#cb3c48'];
     if (/korunmuştur|sorun teşkil etmedi/i.test(text)) return ['UYGUN', '#1c9961'];
     return ['BİLGİ', '#64748b'];
   }
