@@ -987,3 +987,6 @@ const DataParser = {
         return meta;
     }
 };
+
+// Tarayıcıda global olarak eriş (üst düzey const, window özelliği oluşturmaz)
+if (typeof window !== 'undefined') window.DataParser = DataParser;

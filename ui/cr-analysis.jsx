@@ -290,11 +290,18 @@
           <div className="cr-pn" style={{ marginTop: 16, overflow: 'hidden' }}>
             <div className="cr-ph">
               <div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> MKT KONTROL (GERİYE DÖNÜK)</div>
-              <span className="cr-up" style={{ color: retro.hasProblem ? 'var(--bad)' : 'var(--ok)' }}>
-                {retro.hasProblem ? retro.problemCount + ' HATALI ARALIK' : 'SORUN BULUNAMADI'}
+              <span className="cr-up" style={{ color: retro.engineMissing || retro.noData ? 'var(--amber)' : retro.hasProblem ? 'var(--bad)' : 'var(--ok)' }}>
+                {retro.engineMissing || retro.noData ? 'KONTROL YAPILAMADI' : retro.hasProblem ? retro.problemCount + ' HATALI ARALIK' : 'SORUN BULUNAMADI'}
               </span>
             </div>
-            {!retro.triggered ? (
+            {retro.engineMissing || retro.noData ? (
+              <div style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
+                <Ic.alert size={20} style={{ color: 'var(--amber)' }} />
+                <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>
+                  <b style={{ color: 'var(--amber)' }}>Kontrol yapılamadı</b> — {retro.engineMissing ? 'MKT motoru yüklenemedi; sayfayı yenileyin.' : 'sıcaklık serisi bulunamadı.'} Bu bölüm için sonuç üretilemedi.
+                </div>
+              </div>
+            ) : !retro.triggered ? (
               <div style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
                 <Ic.check size={20} style={{ color: 'var(--ok)' }} />
                 <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>
@@ -310,11 +317,12 @@
               </div>
             ) : (
               <table className="cr-t">
-                <thead><tr>{['Sapma', 'Geriye Dönük 24 Saatlik Aralık', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{['Sapma', 'Sapma Aralığı', 'Geriye Dönük 24 Saatlik Aralık', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
                 <tbody>
                   {retro.windows.map((w, i) => (
                     <tr key={i} style={{ cursor: 'default' }}>
                       <td><span className="an-st" style={{ color: w.type === 'high' ? 'var(--amber)' : 'var(--sig)', background: 'transparent', padding: 0 }}><i style={{ background: w.type === 'high' ? 'var(--amber)' : 'var(--sig)' }} />{w.type === 'high' ? 'Yüksek' : 'Düşük'} {w.peak}°</span></td>
+                      <td className="cr-m" style={{ color: 'var(--tx)' }}>{w.excRange}</td>
                       <td className="cr-m" style={{ color: 'var(--t2)' }}>{w.range}</td>
                       <td className="cr-m" style={{ fontWeight: 600, color: w.isOk ? 'var(--tx)' : 'var(--bad)' }}>{w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
                       <td>{statusBadge(w.isOk ? 'ok' : 'bad')}</td>

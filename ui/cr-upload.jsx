@@ -131,7 +131,7 @@
     if (['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(ext)) return 'image';
     return 'excel';
   }
-  function fmtSize(bytes) { return (window.Utils && Utils.formatFileSize) ? Utils.formatFileSize(bytes) : (bytes / 1024).toFixed(0) + ' KB'; }
+  function fmtSize(bytes) { return (typeof Utils !== 'undefined' && Utils.formatFileSize) ? Utils.formatFileSize(bytes) : (bytes / 1024).toFixed(0) + ' KB'; }
 
   // Kademe 2: düşük güvenli satırın kaynak sayfasını görüntüye çevir.
   // pdfjs zaten yüklü — ek bağımlılık yok. Görseller için doğrudan objectURL.

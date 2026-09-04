@@ -219,3 +219,46 @@ describe('MKTEngine.analyzeExcursions', () => {
         assert.ok(r.excursions[0].end);
     });
 });
+
+describe('MKTEngine.analyzeCompliance — gerekçelerde zaman aralığı', () => {
+    const mkData = (temps, startTs = new Date('2026-01-01T00:00:00Z')) =>
+        temps.map((t, i) => ({
+            timestamp: new Date(startTs.getTime() + i * 15 * 60 * 1000),
+            temperature: t,
+        }));
+    const TS = /\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}/;
+
+    test('kritik düşüş gerekçesi en düşük noktanın zamanını ve aralığı taşır', () => {
+        const r = MKTEngine.analyzeCompliance(mkData([3, 4, -1, -0.5, 3, 4]));
+        const reason = r.redReasons.find(x => /KRİTİK DÜŞÜŞ/.test(x));
+        assert.ok(reason, 'kritik düşüş gerekçesi olmalı');
+        assert.match(reason, TS);
+        assert.match(reason, /→/);
+        assert.equal(r.criticalSegments.length, 1);
+        assert.equal(r.criticalSegments[0].type, 'low');
+        assert.equal(r.criticalSegments[0].durationMinutes, 15);
+    });
+
+    test('birden fazla kritik aralık → adet + ilk/son aralık yazılır', () => {
+        const r = MKTEngine.analyzeCompliance(mkData([3, -1, 3, 4, 5, -2, 3]));
+        const reason = r.redReasons.find(x => /KRİTİK DÜŞÜŞ/.test(x));
+        assert.match(reason, /2 ayrı aralık/);
+        assert.equal(r.criticalSegments.length, 2);
+    });
+
+    test('24h MKT ihlal gerekçesi sapma aralığını ve pencereyi taşır', () => {
+        const r = MKTEngine.analyzeCompliance(mkData(new Array(96).fill(12)));
+        const reason = r.redReasons.find(x => /24h MKT/.test(x));
+        assert.match(reason, TS);
+        assert.match(reason, /pencere:/);
+        assert.match(reason, /en yüksek 12°C/);
+        assert.ok(r.checks[0].windowStart && r.checks[0].windowEnd);
+    });
+
+    test('şartlı (telafi) gerekçesi de zaman aralığı taşır', () => {
+        const temps = new Array(96).fill(5); temps[80] = 9; temps[81] = 9;
+        const r = MKTEngine.analyzeCompliance(mkData(temps));
+        assert.match(r.conditionalReasons[0], TS);
+        assert.match(r.conditionalReasons[0], /en yüksek 9°C/);
+    });
+});

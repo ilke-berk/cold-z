@@ -172,12 +172,21 @@ const MKTEngine = {
         // 1. Kritik Sınır Kontrolü (< 0 veya > 15)
         // USER REQUEST: 15 üstü red, 0 altı red.
         const criticalPoints = data.filter(d => d.temperature < 0 || d.temperature > 15);
+        const criticalSegments = [];
         if (criticalPoints.length > 0) {
             globalStatus = 'fail';
-            const min = Math.min(...criticalPoints.map(p => p.temperature));
-            const max = Math.max(...criticalPoints.map(p => p.temperature));
-            if (min < 0) redReasons.push(`KRİTİK DÜŞÜŞ: Sıcaklık 0°C altına düştü (${min}°C). Donma riski tespiti!`);
-            if (max > 15) redReasons.push(`KRİTİK YÜKSELİŞ: Sıcaklık 15°C üstüne çıktı (${max}°C). Ürün stabilitesi bozulmuş olabilir.`);
+            // Kritik sapmaların ZAMAN ARALIKLARI da raporlanır (kaç ayrı aralık, ilk/son, süre)
+            const lowSegs = this._findSegments(data, p => p.temperature < 0).map(s => ({ ...s, type: 'low' }));
+            const highSegs = this._findSegments(data, p => p.temperature > 15).map(s => ({ ...s, type: 'high' }));
+            criticalSegments.push(...lowSegs, ...highSegs);
+            if (lowSegs.length > 0) {
+                const minPoint = criticalPoints.reduce((a, b) => (b.temperature < a.temperature ? b : a));
+                redReasons.push(`KRİTİK DÜŞÜŞ: Sıcaklık 0°C altına düştü (en düşük ${minPoint.temperature}°C · ${this._fmtTs(minPoint.timestamp)}). ${this._describeSegments(lowSegs, '0°C altı')}. Donma riski tespiti!`);
+            }
+            if (highSegs.length > 0) {
+                const maxPoint = criticalPoints.reduce((a, b) => (b.temperature > a.temperature ? b : a));
+                redReasons.push(`KRİTİK YÜKSELİŞ: Sıcaklık 15°C üstüne çıktı (en yüksek ${maxPoint.temperature}°C · ${this._fmtTs(maxPoint.timestamp)}). ${this._describeSegments(highSegs, '15°C üstü')}. Ürün stabilitesi bozulmuş olabilir.`);
+            }
         }
 
         // 2. MKT Kontrolü Gerektiren Segmentleri Bul (0-2 veya 8-15)
@@ -229,16 +238,23 @@ const MKTEngine = {
                 peakTemp: seg.type === 'high' ? Math.max(...data.slice(seg.start, seg.end + 1).map(p => p.temperature)) : Math.min(...data.slice(seg.start, seg.end + 1).map(p => p.temperature)),
                 mkt24h: mktInfo.mkt,
                 isMktOk: isMktOk,
+                windowStart: windowData.length ? windowData[0].timestamp : startTime,
+                windowEnd: fixTime,
                 windowCoverageMinutes: Math.round(windowCoverageHours * 60),
             };
 
             checks.push(checkResult);
 
+            // Gerekçe metni sapmanın ve 24 saatlik pencerenin ZAMAN ARALIĞINI da taşır
+            const bandLabel = seg.type === 'high' ? '8-15°C' : '0-2°C';
+            const segRange = `${this._fmtTs(checkResult.segmentStart)} → ${this._fmtTs(checkResult.segmentEnd)}`;
+            const winRange = `${this._fmtTs(checkResult.windowStart)} → ${this._fmtTs(checkResult.windowEnd)}`;
+            const peakLabel = `${seg.type === 'high' ? 'en yüksek' : 'en düşük'} ${checkResult.peakTemp}°C`;
             if (!isMktOk) {
                 globalStatus = 'fail';
-                redReasons.push(`${seg.type === 'high' ? '8-15°C' : '0-2°C'} sapması sonrası 24h MKT (${mktInfo.mkt}°C) limit dışı. Zincir toparlanamadı.`);
+                redReasons.push(`${bandLabel} sapması (${segRange}, ${peakLabel}) sonrası 24h MKT (${mktInfo.mkt}°C) limit dışı [pencere: ${winRange}]. Zincir toparlanamadı.`);
             } else {
-                conditionalReasons.push(`${seg.type === 'high' ? '8-15°C' : '0-2°C'} sapması algılandı ancak 24h MKT (${mktInfo.mkt}°C) ile telafi edildi.`);
+                conditionalReasons.push(`${bandLabel} sapması (${segRange}, ${peakLabel}) algılandı ancak 24h MKT (${mktInfo.mkt}°C) ile telafi edildi [pencere: ${winRange}].`);
             }
         }
 
@@ -249,6 +265,7 @@ const MKTEngine = {
         return {
             status: globalStatus,
             checks,
+            criticalSegments,
             redReasons,
             conditionalReasons,
             summary: globalStatus === 'pass' ? 'Kabul Edilebilir' : 'Reddedildi',
@@ -347,6 +364,54 @@ const MKTEngine = {
             excursionCount: segments.length,
             windows
         };
+    },
+
+    /**
+     * Zaman damgasını "GG.AA.YYYY SS:DD" biçiminde yazar (gerekçe metinleri için)
+     */
+    _fmtTs(ts) {
+        const d = ts instanceof Date ? ts : new Date(ts);
+        if (isNaN(d.getTime())) return '—';
+        const p = n => String(n).padStart(2, '0');
+        return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    },
+
+    /**
+     * Koşulu sağlayan ardışık noktaları segmentlere böler
+     * @returns {Array<{start:number,end:number,startTime:Date,endTime:Date,durationMinutes:number}>}
+     */
+    _findSegments(data, predicate) {
+        const segs = [];
+        let cur = null;
+        for (let i = 0; i < data.length; i++) {
+            if (predicate(data[i])) {
+                if (!cur) cur = { start: i, end: i };
+                else cur.end = i;
+            } else if (cur) {
+                segs.push(cur);
+                cur = null;
+            }
+        }
+        if (cur) segs.push(cur);
+        return segs.map(s => {
+            const startTime = data[s.start].timestamp;
+            const endTime = data[s.end].timestamp;
+            const durationMinutes = Math.max(0, (new Date(endTime) - new Date(startTime)) / 60000);
+            return { ...s, startTime, endTime, durationMinutes: parseFloat(durationMinutes.toFixed(1)) };
+        });
+    },
+
+    /**
+     * Segment listesini tek cümlelik zaman aralığı özetine çevirir
+     */
+    _describeSegments(segs, label) {
+        const fmtDur = m => (typeof Utils !== 'undefined' && Utils.formatDuration) ? Utils.formatDuration(m) : `${Math.round(m)} dk`;
+        const range = s => `${this._fmtTs(s.startTime)} → ${this._fmtTs(s.endTime)}`;
+        const total = segs.reduce((acc, s) => acc + s.durationMinutes, 0);
+        if (segs.length === 1) return `${label} aralık: ${range(segs[0])} (${fmtDur(total)})`;
+        const first = segs[0];
+        const last = segs[segs.length - 1];
+        return `${label} ${segs.length} ayrı aralık — ilki ${range(first)}, sonuncusu ${range(last)} (toplam ${fmtDur(total)})`;
     },
 
     /**
@@ -491,3 +556,6 @@ const MKTEngine = {
         };
     }
 };
+
+// Tarayıcıda global olarak eriş (üst düzey const, window özelliği oluşturmaz)
+if (typeof window !== 'undefined') window.MKTEngine = MKTEngine;

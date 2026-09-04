@@ -437,3 +437,6 @@ const Utils = {
         return parseFloat(k) - 273.15;
     }
 };
+
+// Tarayıcıda global olarak eriş (üst düzey const, window özelliği oluşturmaz)
+if (typeof window !== 'undefined') window.Utils = Utils;

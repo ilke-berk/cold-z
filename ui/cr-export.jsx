@@ -206,7 +206,11 @@
         {retro && (
           <section className="pd-block">
             <div className="pd-st">MKT Kontrol · Geriye Dönük 24 Saat</div>
-            {!retro.triggered ? (
+            {retro.engineMissing || retro.noData ? (
+              <div className="pd-reg">
+                <b>Kontrol yapılamadı</b> — {retro.engineMissing ? 'MKT motoru yüklenemedi' : 'sıcaklık serisi bulunamadı'}; bu bölüm için sonuç üretilemedi.
+              </div>
+            ) : !retro.triggered ? (
               <div className="pd-reg">
                 <b>Sorun bulunamadı</b> — sıcaklık hiçbir noktada {retro.lo}–{retro.hi} °C aralığının dışına çıkmadı; geriye dönük 24 saatlik MKT kontrolü gerekmedi.
               </div>
@@ -217,11 +221,12 @@
             ) : (
               <div className="pd-tblWrap">
                 <table className="pd-tbl">
-                  <thead><tr><th>Sapma</th><th>Geriye Dönük 24 Saatlik Aralık</th><th>24h MKT</th><th style={{ textAlign: 'right' }}>Durum</th></tr></thead>
+                  <thead><tr><th>Sapma</th><th>Sapma Aralığı</th><th>Geriye Dönük 24 Saatlik Aralık</th><th>24h MKT</th><th style={{ textAlign: 'right' }}>Durum</th></tr></thead>
                   <tbody>
                     {retro.windows.map((w, i) => (
                       <tr key={i}>
                         <td>{w.type === 'high' ? 'Yüksek' : 'Düşük'} · {w.peak} °C</td>
+                        <td className="m">{w.excRange}</td>
                         <td className="m" style={{ color: '#475569' }}>{w.range}</td>
                         <td className="m" style={{ fontWeight: 600, color: w.isOk ? '#334155' : '#cb3c48' }}>{w.mkt24h != null ? w.mkt24h + ' °C' : '—'}</td>
                         <td style={{ textAlign: 'right' }}><span className="pd-bd" style={{ color: w.isOk ? '#1c9961' : '#cb3c48', background: w.isOk ? '#e9f6ee' : '#fae7e8' }}>{w.isOk ? 'UYGUN' : 'İHLAL'}</span></td>

@@ -23,7 +23,7 @@ window.CCPipeline = (function () {
     return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   }
   function fmtDur(min) {
-    if (window.Utils && Utils.formatDuration) return Utils.formatDuration(min || 0);
+    if (typeof Utils !== 'undefined' && Utils.formatDuration) return Utils.formatDuration(min || 0);
     return Math.round(min || 0) + ' dk';
   }
 
@@ -42,9 +42,12 @@ window.CCPipeline = (function () {
       .filter(p => isFinite(p.timestamp.getTime()) && isFinite(p.temperature))
       .sort((a, b) => a.timestamp - b.timestamp);
 
-    const r = (window.MKTEngine && MKTEngine.retrospectiveMKTCheck)
-      ? MKTEngine.retrospectiveMKTCheck(series, lo, hi)
-      : { triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows: [] };
+    // Motor yoksa ASLA "sorun yok" deme — UI'da açıkça "kontrol yapılamadı" gösterilir.
+    const hasEngine = typeof MKTEngine !== 'undefined' && typeof MKTEngine.retrospectiveMKTCheck === 'function';
+    if (!hasEngine || !series.length) {
+      return { engineMissing: !hasEngine, noData: !series.length, triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows: [], lo, hi };
+    }
+    const r = MKTEngine.retrospectiveMKTCheck(series, lo, hi);
 
     const windows = (r.windows || []).map(w => ({
       type: w.type,
@@ -52,10 +55,11 @@ window.CCPipeline = (function () {
       mkt24h: w.mkt24h,
       isOk: w.isOk,
       coverageH: w.coverageHours,
+      excRange: fmtDT(w.excursionStart) + ' → ' + fmtDT(w.excursionEnd),
       range: fmtDT(w.windowStart) + ' → ' + fmtDT(w.windowEnd),
     }));
 
-    return { triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, excursionCount: r.excursionCount, windows, lo, hi };
+    return { engineMissing: false, noData: false, triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, excursionCount: r.excursionCount, windows, lo, hi };
   }
   window.CCRetro = buildRetro;
 
@@ -194,7 +198,7 @@ window.CCPipeline = (function () {
         const reviews = pending.map(p => {
           const idx = files.findIndex(f => f.id === p.id);
           const rows = (idx >= 0 && parsed[idx].parsedData) || [];
-          const sample = (window.Utils && Utils.sampleRows ? Utils.sampleRows(rows, 10) : rows.slice(0, 10).map((row, index) => ({ index, row })))
+          const sample = (typeof Utils !== 'undefined' && Utils.sampleRows ? Utils.sampleRows(rows, 10) : rows.slice(0, 10).map((row, index) => ({ index, row })))
             .map(s => ({
               index: s.index,
               date: fmtFullDT(s.row.timestamp),
@@ -298,7 +302,7 @@ window.CCPipeline = (function () {
     // 5) Cihaz seri no mükerrer kontrolü (backend)
     const deviceSerial = (analysis.metadata && analysis.metadata.deviceSerial) || form.serial;
     let primaryFileHash = null;
-    if (deviceSerial && files[0] && files[0].file && window.Utils && Utils.sha256OfBytes) {
+    if (deviceSerial && files[0] && files[0].file && typeof Utils !== 'undefined' && Utils.sha256OfBytes) {
       try {
         const buf = await files[0].file.arrayBuffer();
         primaryFileHash = await Utils.sha256OfBytes(buf);
