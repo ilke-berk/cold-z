@@ -45,7 +45,7 @@ window.CCPipeline = (function () {
     // Motor yoksa ASLA "sorun yok" deme — UI'da açıkça "kontrol yapılamadı" gösterilir.
     const hasEngine = typeof MKTEngine !== 'undefined' && typeof MKTEngine.retrospectiveMKTCheck === 'function';
     if (!hasEngine || !series.length) {
-      return { engineMissing: !hasEngine, noData: !series.length, triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows: [], lo, hi };
+      return { engineMissing: !hasEngine, noData: !series.length, triggered: false, hasProblem: false, problemCount: 0, insufficientCount: 0, excursionCount: 0, windows: [], lo, hi };
     }
     const r = MKTEngine.retrospectiveMKTCheck(series, lo, hi);
 
@@ -54,12 +54,15 @@ window.CCPipeline = (function () {
       peak: w.peakTemp,
       mkt24h: w.mkt24h,
       isOk: w.isOk,
+      status: w.status || (w.isOk ? 'ok' : 'bad'),
+      insufficient: !!w.insufficientData,
       coverageH: w.coverageHours,
+      coverage: fmtDur(Math.round((w.coverageHours || 0) * 60)),
       excRange: fmtDT(w.excursionStart) + ' → ' + fmtDT(w.excursionEnd),
       range: fmtDT(w.windowStart) + ' → ' + fmtDT(w.windowEnd),
     }));
 
-    return { engineMissing: false, noData: false, triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, excursionCount: r.excursionCount, windows, lo, hi };
+    return { engineMissing: false, noData: false, triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, insufficientCount: r.insufficientCount || 0, excursionCount: r.excursionCount, windows, lo, hi };
   }
   window.CCRetro = buildRetro;
 
@@ -97,7 +100,7 @@ window.CCPipeline = (function () {
     // sapmalar
     const exc = (a.excursions && a.excursions.excursions) || [];
     const excursions = exc.map(e => ({
-      start: fmtDT(e.start), end: fmtDT(e.end), dur: fmtDur(e.duration),
+      start: fmtDT(e.start), end: fmtDT(e.end), dur: fmtDur(e.duration), durMin: Number(e.duration) || 0,
       type: e.type || 'high', peak: e.peakTemp != null ? e.peakTemp : (e.startTemp || 0),
     }));
 

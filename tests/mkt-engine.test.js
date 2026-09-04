@@ -99,6 +99,30 @@ describe('MKTEngine.analyzeCompliance', () => {
     });
 });
 
+describe('MKTEngine.retrospectiveMKTCheck — yetersiz veri', () => {
+    const mkData = (temps, startTs = new Date('2026-01-01T00:00:00Z')) =>
+        temps.map((t, i) => ({
+            timestamp: new Date(startTs.getTime() + i * 15 * 60 * 1000),
+            temperature: t,
+        }));
+
+    test('kısa kayıt: 24h penceresi dolmadan sapma → insufficient, hasProblem=false', () => {
+        const r = MKTEngine.retrospectiveMKTCheck(mkData([12, 12, 12, 5, 5]));
+        assert.equal(r.triggered, true);
+        assert.equal(r.hasProblem, false);
+        assert.equal(r.problemCount, 0);
+        assert.equal(r.insufficientCount, 1);
+        assert.equal(r.windows[0].status, 'insufficient');
+        assert.equal(r.windows[0].isOk, null);
+    });
+
+    test('yeterli kapsam: 24h boyunca 12°C → bad', () => {
+        const r = MKTEngine.retrospectiveMKTCheck(mkData(new Array(96).fill(12)));
+        assert.equal(r.windows[0].status, 'bad');
+        assert.equal(r.insufficientCount, 0);
+    });
+});
+
 describe('MKTEngine.retrospectiveMKTCheck', () => {
     const mkData = (temps, startTs = new Date('2026-01-01T00:00:00Z')) =>
         temps.map((t, i) => ({
@@ -253,6 +277,17 @@ describe('MKTEngine.analyzeCompliance — gerekçelerde zaman aralığı', () =>
         assert.match(reason, /pencere:/);
         assert.match(reason, /en yüksek 12°C/);
         assert.ok(r.checks[0].windowStart && r.checks[0].windowEnd);
+    });
+
+    test('pencere 24 saati kapsamıyorsa → yetersiz veri, ihlal sayılmaz', () => {
+        // Kayıt başında 1.5°C: geriye 24 saat veri yok → red olmamalı
+        const r = MKTEngine.analyzeCompliance(mkData([1.5, 1.4, 5, 5, 5, 5]));
+        assert.equal(r.status, 'pass');
+        assert.equal(r.redReasons.length, 0);
+        assert.equal(r.checks[0].insufficientData, true);
+        assert.equal(r.checks[0].isMktOk, null);
+        assert.equal(r.insufficientReasons.length, 1);
+        assert.match(r.insufficientReasons[0], /yetersiz veri/);
     });
 
     test('şartlı (telafi) gerekçesi de zaman aralığı taşır', () => {

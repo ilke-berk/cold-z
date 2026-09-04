@@ -566,8 +566,9 @@ const AnalysisPage = {
                     return '<tr><td colspan="5" style="text-align:center;color:var(--text-tertiary);padding:20px">Özel MKT hesabı veya kritik sapma tespit edilmedi.</td></tr>';
                 }
 
-                const failed = allChecks.filter(c => !c.isMktOk);
-                const passed = allChecks.filter(c => c.isMktOk);
+                const failed = allChecks.filter(c => c.isMktOk === false);
+                const insufficient = allChecks.filter(c => c.insufficientData);
+                const passed = allChecks.filter(c => c.isMktOk === true);
                 let html = '';
 
                 // Kritik Sapmalar (Anlık Red sebebi)
@@ -589,7 +590,7 @@ const AnalysisPage = {
                 }
 
                 const renderRow = (c) => `
-                                <tr class="${!c.isMktOk ? 'deviation-highlight' : ''}">
+                                <tr class="${c.isMktOk === false ? 'deviation-highlight' : ''}">
                                     <td>
                                         <span class="badge-status badge-${c.type === 'high' ? 'warning' : 'info'}">
                                             ${c.type === 'high' ? '15-25°C Arası' : '1-2°C Arası'} (${c.peakTemp}°C)
@@ -601,11 +602,13 @@ const AnalysisPage = {
                                         ${Utils.formatDuration(c.windowCoverageMinutes)}
                                         ${c.windowCoverageMinutes < 1200 ? ' ⚠️' : ''}
                                     </td>
-                                    <td>${Components.decisionBadge(c.isMktOk ? 'accept' : 'reject', c.isMktOk ? 'MKT limitler dahilinde kalmayı başardı.' : 'Bu periyotta MKT yasal sınır olan 8°C üstünde kaldı. RED onayı verildi.')}</td>
+                                    <td>${c.insufficientData ? '<span class="badge-status badge-warning" title="Geriye dönük 24 saatlik veri yok; MKT karara katılmadı.">YETERSİZ VERİ</span>' : Components.decisionBadge(c.isMktOk ? 'accept' : 'reject', c.isMktOk ? 'MKT limitler dahilinde kalmayı başardı.' : 'Bu periyotta MKT yasal sınır olan 8°C üstünde kaldı. RED onayı verildi.')}</td>
                                 </tr>`;
 
                 // Diğer başarısız segmentleri göster
                 html += failed.map(renderRow).join('');
+                // Yetersiz veri (24h penceresi dolmayan) segmentler — ihlal sayılmaz
+                html += insufficient.map(renderRow).join('');
 
                 // Başarılı olanları açılır kapanır yap
                 if (passed.length > 0) {

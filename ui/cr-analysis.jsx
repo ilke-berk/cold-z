@@ -96,7 +96,7 @@
   }
 
   function statusBadge(state) {
-    const m = { ok: ['var(--ok)', 'UYGUN'], warn: ['var(--amber)', 'SINIRDA'], bad: ['var(--bad)', 'İHLAL'] }[state];
+    const m = { ok: ['var(--ok)', 'UYGUN'], warn: ['var(--amber)', 'SINIRDA'], bad: ['var(--bad)', 'İHLAL'], insufficient: ['var(--amber)', 'YETERSİZ VERİ'] }[state];
     return <span className="an-st" style={{ color: m[0], background: 'transparent', padding: 0 }}><i style={{ background: m[0] }} />{m[1]}</span>;
   }
 
@@ -291,7 +291,7 @@
             <div className="cr-ph">
               <div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> MKT KONTROL (GERİYE DÖNÜK)</div>
               <span className="cr-up" style={{ color: retro.engineMissing || retro.noData ? 'var(--amber)' : retro.hasProblem ? 'var(--bad)' : 'var(--ok)' }}>
-                {retro.engineMissing || retro.noData ? 'KONTROL YAPILAMADI' : retro.hasProblem ? retro.problemCount + ' HATALI ARALIK' : 'SORUN BULUNAMADI'}
+                {retro.engineMissing || retro.noData ? 'KONTROL YAPILAMADI' : retro.hasProblem ? retro.problemCount + ' HATALI ARALIK' + (retro.insufficientCount ? ' · ' + retro.insufficientCount + ' YETERSİZ VERİ' : '') : retro.insufficientCount ? 'SORUN BULUNAMADI · ' + retro.insufficientCount + ' YETERSİZ VERİ' : 'SORUN BULUNAMADI'}
               </span>
             </div>
             {retro.engineMissing || retro.noData ? (
@@ -308,7 +308,7 @@
                   <b style={{ color: 'var(--ok)' }}>Sorun bulunamadı</b> — sıcaklık hiçbir noktada {retro.lo}–{retro.hi}°C aralığının dışına çıkmadı; geriye dönük 24 saatlik MKT kontrolü gerekmedi.
                 </div>
               </div>
-            ) : !retro.hasProblem ? (
+            ) : !retro.hasProblem && !retro.insufficientCount ? (
               <div style={{ padding: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
                 <Ic.check size={20} style={{ color: 'var(--ok)' }} />
                 <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>
@@ -317,21 +317,22 @@
               </div>
             ) : (
               <table className="cr-t">
-                <thead><tr>{['Sapma', 'Sapma Aralığı', 'Geriye Dönük 24 Saatlik Aralık', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{['Sapma', 'Sapma Aralığı', 'Geriye Dönük 24 Saatlik Aralık', 'Pencere Kapsamı', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
                 <tbody>
                   {retro.windows.map((w, i) => (
                     <tr key={i} style={{ cursor: 'default' }}>
                       <td><span className="an-st" style={{ color: w.type === 'high' ? 'var(--amber)' : 'var(--sig)', background: 'transparent', padding: 0 }}><i style={{ background: w.type === 'high' ? 'var(--amber)' : 'var(--sig)' }} />{w.type === 'high' ? 'Yüksek' : 'Düşük'} {w.peak}°</span></td>
                       <td className="cr-m" style={{ color: 'var(--tx)' }}>{w.excRange}</td>
                       <td className="cr-m" style={{ color: 'var(--t2)' }}>{w.range}</td>
-                      <td className="cr-m" style={{ fontWeight: 600, color: w.isOk ? 'var(--tx)' : 'var(--bad)' }}>{w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
-                      <td>{statusBadge(w.isOk ? 'ok' : 'bad')}</td>
+                      <td className="cr-m" style={{ color: w.insufficient ? 'var(--amber)' : 'var(--t2)' }}>{w.coverage}</td>
+                      <td className="cr-m" style={{ fontWeight: 600, color: w.status === 'bad' ? 'var(--bad)' : w.insufficient ? 'var(--t3)' : 'var(--tx)' }}>{w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
+                      <td>{statusBadge(w.status)}</td>
                     </tr>))}
                 </tbody>
               </table>
             )}
             <div style={{ padding: '12px 18px', borderTop: '1px solid var(--ln)', fontSize: 11, color: 'var(--t3)', lineHeight: 1.5 }}>
-              <b>Yöntem:</b> Sıcaklık {retro.lo}–{retro.hi}°C aralığının dışına <b>her çıktığında (istisnasız)</b>, sapmanın düzeldiği andan geriye doğru 24 saatlik MKT hesaplanır. Bu pencerenin MKT'si {retro.lo}–{retro.hi}°C dışındaysa ilgili aralık hatalı olarak bildirilir.
+              <b>Yöntem:</b> Sıcaklık {retro.lo}–{retro.hi}°C aralığının dışına <b>her çıktığında (istisnasız)</b>, sapmanın düzeldiği andan geriye doğru 24 saatlik MKT hesaplanır. Bu pencerenin MKT'si {retro.lo}–{retro.hi}°C dışındaysa ilgili aralık hatalı olarak bildirilir. Pencere 24 saati kapsamıyorsa (kayıt başı veya veri boşluğu) satır <b>yetersiz veri</b> olarak işaretlenir ve ihlal sayılmaz.
             </div>
           </div>
         )}

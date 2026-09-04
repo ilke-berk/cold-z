@@ -12,6 +12,10 @@ const MKTEngine = {
     // Sabitler
     R: 8.314,           // Evrensel gaz sabiti J/(mol·K)
     DEFAULT_DH: 83144,  // Aktivasyon enerjisi J/mol (83.144 kJ/mol)
+    // Geriye dönük 24 saatlik MKT penceresi için asgari veri kapsamı (saat).
+    // Pencere bu kadar saati kapsamıyorsa (kayıt başı / veri boşluğu) karar
+    // verilemez: "yetersiz veri" olarak işaretlenir, ihlal SAYILMAZ.
+    MIN_WINDOW_COVERAGE_HOURS: 20,
 
     /**
      * MKT hesapla
@@ -168,6 +172,7 @@ const MKTEngine = {
         let globalStatus = 'pass';
         const redReasons = [];
         const conditionalReasons = [];
+        const insufficientReasons = [];
 
         // 1. Kritik Sınır Kontrolü (< 0 veya > 15)
         // USER REQUEST: 15 üstü red, 0 altı red.
@@ -228,8 +233,10 @@ const MKTEngine = {
             }
 
             const mktInfo = this.calculate(windowTemps);
-            // Karar: 24h MKT 2-8 arasındaysa OK
-            const isMktOk = mktInfo.mkt >= 2 && mktInfo.mkt <= 8;
+            // Pencere 24 saati kapsamıyorsa (tolerans: MIN_WINDOW_COVERAGE_HOURS) karar verilemez
+            const insufficientData = windowCoverageHours < this.MIN_WINDOW_COVERAGE_HOURS;
+            // Karar: 24h MKT 2-8 arasındaysa OK (yetersiz veride null — ihlal sayılmaz)
+            const isMktOk = insufficientData ? null : (mktInfo.mkt >= 2 && mktInfo.mkt <= 8);
 
             const checkResult = {
                 segmentStart: data[seg.start].timestamp,
@@ -238,6 +245,7 @@ const MKTEngine = {
                 peakTemp: seg.type === 'high' ? Math.max(...data.slice(seg.start, seg.end + 1).map(p => p.temperature)) : Math.min(...data.slice(seg.start, seg.end + 1).map(p => p.temperature)),
                 mkt24h: mktInfo.mkt,
                 isMktOk: isMktOk,
+                insufficientData,
                 windowStart: windowData.length ? windowData[0].timestamp : startTime,
                 windowEnd: fixTime,
                 windowCoverageMinutes: Math.round(windowCoverageHours * 60),
@@ -250,7 +258,10 @@ const MKTEngine = {
             const segRange = `${this._fmtTs(checkResult.segmentStart)} → ${this._fmtTs(checkResult.segmentEnd)}`;
             const winRange = `${this._fmtTs(checkResult.windowStart)} → ${this._fmtTs(checkResult.windowEnd)}`;
             const peakLabel = `${seg.type === 'high' ? 'en yüksek' : 'en düşük'} ${checkResult.peakTemp}°C`;
-            if (!isMktOk) {
+            if (insufficientData) {
+                const cov = (typeof Utils !== 'undefined' && Utils.formatDuration) ? Utils.formatDuration(Math.round(windowCoverageHours * 60)) : `${windowCoverageHours.toFixed(1)} sa`;
+                insufficientReasons.push(`${bandLabel} sapması (${segRange}, ${peakLabel}) için geriye dönük 24 saatlik veri yok (mevcut pencere: ${winRange}, ${cov}). MKT (${mktInfo.mkt}°C) karara katılmadı — yetersiz veri.`);
+            } else if (!isMktOk) {
                 globalStatus = 'fail';
                 redReasons.push(`${bandLabel} sapması (${segRange}, ${peakLabel}) sonrası 24h MKT (${mktInfo.mkt}°C) limit dışı [pencere: ${winRange}]. Zincir toparlanamadı.`);
             } else {
@@ -268,6 +279,7 @@ const MKTEngine = {
             criticalSegments,
             redReasons,
             conditionalReasons,
+            insufficientReasons,
             summary: globalStatus === 'pass' ? 'Kabul Edilebilir' : 'Reddedildi',
             excursionCount: segments.length
         };
@@ -289,14 +301,18 @@ const MKTEngine = {
      * @param {Array} data - [{timestamp, temperature}] (kronolojik sıralı)
      * @param {number} lowerLimit - Alt limit (°C)
      * @param {number} upperLimit - Üst limit (°C)
-     * @returns {object} { triggered, hasProblem, problemCount, excursionCount, windows[] }
+     * Pencere MIN_WINDOW_COVERAGE_HOURS saatten az veri kapsıyorsa (kayıt başı,
+     * veri boşluğu) o satır "yetersiz veri" (status: 'insufficient') olur ve
+     * ihlal SAYILMAZ.
+     *
+     * @returns {object} { triggered, hasProblem, problemCount, insufficientCount, excursionCount, windows[] }
      */
     retrospectiveMKTCheck(data, lowerLimit = 2, upperLimit = 8) {
         const toMs = (t) => (t instanceof Date ? t.getTime() : new Date(t).getTime());
         const windows = [];
 
         if (!data || data.length === 0) {
-            return { triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows };
+            return { triggered: false, hasProblem: false, problemCount: 0, insufficientCount: 0, excursionCount: 0, windows };
         }
 
         // 1. Kabul aralığı dışındaki tüm ardışık segmentleri bul (istisnasız)
@@ -328,7 +344,7 @@ const MKTEngine = {
             const windowTemps = windowData.map(d => d.temperature);
             const mktInfo = this.calculate(windowTemps);
 
-            const isOk = mktInfo.mkt != null && mktInfo.mkt >= lowerLimit && mktInfo.mkt <= upperLimit;
+            const mktInRange = mktInfo.mkt != null && mktInfo.mkt >= lowerLimit && mktInfo.mkt <= upperLimit;
 
             const segTemps = data.slice(seg.start, seg.end + 1).map(p => p.temperature);
             const segMin = Math.min(...segTemps);
@@ -342,6 +358,10 @@ const MKTEngine = {
                 coverageHours = (toMs(windowData[windowData.length - 1].timestamp) - toMs(windowData[0].timestamp)) / 3600000;
             }
 
+            const insufficientData = coverageHours < this.MIN_WINDOW_COVERAGE_HOURS;
+            const isOk = insufficientData ? null : mktInRange;
+            const status = insufficientData ? 'insufficient' : (mktInRange ? 'ok' : 'bad');
+
             windows.push({
                 excursionStart: data[seg.start].timestamp,
                 excursionEnd: data[seg.end].timestamp,
@@ -351,16 +371,20 @@ const MKTEngine = {
                 windowEnd: data[seg.end].timestamp,
                 mkt24h: mktInfo.mkt,
                 isOk,
+                status,
+                insufficientData,
                 sampleCount: windowTemps.length,
                 coverageHours: parseFloat(coverageHours.toFixed(1))
             });
         }
 
-        const problemWindows = windows.filter(w => !w.isOk);
+        const problemWindows = windows.filter(w => w.status === 'bad');
+        const insufficientWindows = windows.filter(w => w.status === 'insufficient');
         return {
             triggered: segments.length > 0,
             hasProblem: problemWindows.length > 0,
             problemCount: problemWindows.length,
+            insufficientCount: insufficientWindows.length,
             excursionCount: segments.length,
             windows
         };
