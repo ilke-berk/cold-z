@@ -23,8 +23,8 @@ const DashboardPage = {
         try {
             // API'den gerçek istatistikleri ve son işlemleri al
             const [statsRes, recentRes] = await Promise.all([
-                fetch('http://localhost:3000/api/stats').then(r => r.json()),
-                fetch('http://localhost:3000/api/recent-analyses').then(r => r.json())
+                fetch(API_BASE + '/api/stats').then(r => r.json()),
+                fetch(API_BASE + '/api/recent-analyses').then(r => r.json())
             ]);
 
             const dbStats = statsRes.success ? statsRes.data : null;

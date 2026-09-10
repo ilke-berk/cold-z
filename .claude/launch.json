@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "coldchain-server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--use-system-ca", "server.js"],
+      "port": 3000
+    }
+  ]
+}

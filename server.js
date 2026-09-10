@@ -1302,7 +1302,7 @@ app.delete('/api/templates/:id', async (req, res) => {
 
 function start() {
     const geminiReady = initGemini();
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
         console.log('\n' + '='.repeat(60));
         console.log('  ColdChain AI Server v3.2.0-hybrid (Smart Chunking + SQLite)');
         console.log('='.repeat(60));
@@ -1315,6 +1315,20 @@ function start() {
 
         // Veritabanını Başlat
         db.initDB();
+    });
+
+    // Port doluysa sessizce ölme: büyük ihtimalle uygulamanın başka bir kopyası
+    // (eski sürüm) çalışıyor ve tarayıcı onu gösteriyor. Açıkça söyle ve çık.
+    server.on('error', (err) => {
+        if (err.code !== 'EADDRINUSE') throw err;
+        const msg = `Port ${PORT} zaten kullanımda.\n\n` +
+            `Muhtemelen ColdChain AI'ın başka bir kopyası (eski sürüm?) çalışıyor.\n` +
+            `Önce onu kapatın veya .env dosyasında farklı bir PORT verin.`;
+        console.error('\n[HATA] ' + msg + '\n');
+        if (process.versions && process.versions.electron) {
+            try { require('electron').dialog.showErrorBox('ColdChain AI', msg); } catch (_) {}
+        }
+        process.exit(1);
     });
 }
 

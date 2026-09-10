@@ -4,7 +4,7 @@
  * sadece UI önbelleğidir; gerçek otorite veritabanıdır.
  */
 const AuditTrail = {
-    API: 'http://localhost:3000/api/audit',
+    API: API_BASE + '/api/audit',
 
     async log(type, action, details, user = 'Sistem', tags = []) {
         // 1) Hemen UI'a yansıt (optimistik)

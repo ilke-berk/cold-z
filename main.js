@@ -7,7 +7,8 @@ const { app, BrowserWindow, Menu, ipcMain } = require('electron');
 const path = require('path');
 
 // Backend sunucusunu Electron ile birlikte başlat
-require('./server.js');
+// server.js yalnızca doğrudan çalıştırılınca port açar; Electron'dan start() ile başlatılmalı.
+require('./server.js').start();
 
 // Keep a global reference of the window object to prevent garbage collection
 let mainWindow;

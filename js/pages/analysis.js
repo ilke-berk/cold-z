@@ -735,7 +735,7 @@ const AnalysisPage = {
         }
 
         try {
-            const result = await fetch('http://localhost:3000/api/save-analysis', {
+            const result = await fetch(API_BASE + '/api/save-analysis', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(AppState.currentAnalysis)
