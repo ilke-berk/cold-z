@@ -256,3 +256,30 @@ Sistemin hibrit (deterministik-önce, AI-yedekli) omurgası doğru. Ana sorun pa
 3. **Gerçek belgelerden regresyon korpusu** — her parser değişikliği ölçülebilir şekilde doğrulanır.
 
 Faz 1'deki hatalar (özellikle CSV eşleştirmesinin yok sayılması ve gün/ay takası varsayılanı) bugün üretimde sessiz yanlış sonuç üretebildiğinden ilk oradan başlanması önerilir.
+
+## 8. Karar Motoru Düzeltmeleri (Faz 8 — 10.09.2026)
+
+Parser tarafı Faz 1-7 ile olgunlaştıktan sonra yapılan kod incelemesi, sahadaki asıl güvenilirlik riskinin artık **karar motorunda** olduğunu gösterdi: analiz "başarılı" görünürken karar yanlış çıkabiliyordu. Aşağıdaki maddelerin tamamı `js/mkt-engine.js` ve `js/decision-engine.js`'de düzeltildi, `tests/mkt-engine.test.js` + `tests/decision-engine.test.js` ile kilitlendi (**301/301 geçiyor**).
+
+### Tespit → Düzeltme
+
+| # | Sorun (eski davranış) | Düzeltme |
+|---|---|---|
+| 1 | **MKT eşit aralık varsayıyordu.** Düzensiz logger aralığı, boşluk veya birleştirilmiş dosyalarda sık örneklenen dönem sonucu domine ediyordu. | `calculateWeighted`: trapez (zaman ağırlıklı) integrasyon. `fullAnalysis`, 24h pencereler ve grafikteki ölçüm aracı (`cr-decisionchart.jsx`) artık bunu kullanır. Eşit ağırlıklı değer `mktUnweighted` olarak yanında raporlanır; `mkt.method` çıktıda. |
+| 2 | **Donma MKT ile "kurtarılıyordu.** Geriye dönük kontrolde 0°C altı sapma, 24h MKT bant içindeyse sorun sayılmıyordu. | Yeni sapma sınıfı `freeze`: pencere `status: 'freeze'`, `isOk: false`, MKT değeri ne olursa olsun sorun. Karar motoru → RED ("donma hasarı geri dönüşsüzdür; MKT telafi sayılmaz"). Dondurulmuş ürün aralıklarında (alt limit < 0) donma kuralı uygulanmaz. |
+| 3 | **TOR yanlış hesaplanıyor, sonra hiç kullanılmıyordu.** Her aralık önceki örneğe yazılıyor, 6 saatlik logger kesintisi tamamen "dolap dışı" sayılıyordu; kural da yorum satırındaydı ama arayüz TOR limit/kullanım gösteriyordu. | `calculateTORDetailed`: geçiş aralıkları yarım (orta nokta), gapCap üstü aralık **bilinmeyen** (`unknownGapMinutes`, sayılmaz). TOR = üst limit ÜSTÜ süre; alt limit altı `coldMinutes`, donma `freezeMinutes` ayrı. Kural etkinleştirildi: aşım → **ŞARTLI** (formüler boş olduğundan RED değil; eczacı üretici stabilite verisiyle değerlendirir). |
+| 4 | **Zayıf veride kapı açık kalıyordu.** Kapsama ilk-son örnek farkıydı: 24 saat arayla iki örnek "tam kapsama" sayılıyordu; 20 saatin altında "yetersiz → ihlal değil" ile eksik kayıtlı logger tam kayıtlıdan avantajlıydı. | Kapsama = boşluk düşülmüş gerçek örnek-arası süre toplamı + en az `MIN_WINDOW_SAMPLES` (6) örnek. Yetersiz pencere yine ihlal değil ama karar motoru **ŞARTLI**'ya yükseltir (temiz kabul değil); `insufficientWhy` gerekçesi raporda. |
+| 5 | **Histerezis ve anlık sapma filtresi yoktu.** 8.1 / 7.9 / 8.1 flapping'i ayrı sapmalar açıyor, tek 8.1 okuması 24h MKT kontrolü tetikliyordu (koddaki "anlık sapmalar gözardı" notu uygulanmıyordu). | `findExcursionSegments` tek kaynak: histerezis (0.3°C) ile sapma ancak limitin içine dönünce kapanır; `transient` sınıfı (süre < 30 dk **ve** limitten ≤ 0.5°C) MKT penceresi açmaz, ihlal sayılmaz ama listelenir ve karara bilgi notu düşer. Kritik/donma okumaları ASLA transient sayılmaz. Süre orta nokta yaklaşımıyla (tek okuma @15dk ≈ 15 dk). |
+| 6 | **Uygunluk analizi 2-8 sabitti.** `analyzeCompliance` 0/15 eşiklerini sabit kodluyordu: dondurulmuş (−25…−15) ürünün her okuması "kritik donma" oluyordu. | `normalizeOptions`: `criticalLow = lo−2`, `criticalHigh = hi+7`, `freezeLimit = lo ≥ 0 ? 0 : yok` (hepsi config ile ezilebilir). Karar metinleri, TIR dilimleri (`cc-pipeline.js`) ve raporlar seçilen aralığı yazar. |
+| 7 | **Rapor/sertifika 2-8 sabit basıyordu**; `revize` kararı ekran raporunda "ŞARTLI" görünüyordu; sertifika belge no `CC-—-2606` olabiliyordu. | `cr-export.jsx` / `cr-report.jsx`: kabul limiti, grafik bandı, TIR etiketleri, mevzuat metni seçilen aralıktan; `revize` etiketi eklendi; belge no PDF ile aynı kuralı kullanır. Sapma listesinde "· donma" / "· anlık" işaretleri; geriye dönük tabloda DONMA rozeti. |
+| 8 | Sırasız / mükerrer zaman damgalı / geçersiz satırlı girdi negatif süre üretiyordu; `Math.min(...arr)` büyük seride yığın taşırıyordu. | `prepareSeries` (`fullAnalysis` girişinde, girdi değiştirilmez): sıralama, geçersiz ayıklama, aynı zaman damgasında ilk okuma. `preprocessing` çıktıda. Döngü tabanlı min/max. |
+| 9 | Ultra soğuk (−80…−60) preset her seferinde "makul değil" diye incelemeye düşüyordu. | Güven skorunun makullük bandı seçilen aralığa göre genişler (`options.limits` → `ext.plausibleMin/Max`); 2-8 için değişmez. |
+
+### Karar öncelik sırası
+`accept < conditional < revize < reject` — bir bulgu kararı yalnızca yukarı taşır. ŞARTLI = veri sağlam ama sistem tek başına karar veremiyor (TOR aşımı, değerlendirilemeyen sapma); REVİZE = veri bütünlüğü/sıklığı sorunlu.
+
+### Bilinçli olarak yapılmayanlar
+- **Zaman dilimi / yaz saati:** Türkiye 2016'dan beri kalıcı UTC+3; yerel saatle kurulan zaman damgaları Türk eczane verisi için doğru. Yurt dışı logger'ı eklenirse parser tarafında ele alınmalı.
+- **TOR aşımı RED değil ŞARTLI:** ürün bazlı stabilite bütçesi (formüler) dolana kadar RED'e çevrilmemeli.
+- **Eski arayüz (`index.html`, `js/pages/`)** hesaplama olarak yeni motoru kullanır ama etiketleri (0-2 / 8-15, "YETERSİZ VERİ" → hatalı sayma) güncellenmedi; Control Room esas arayüz kabul edildi.
+- Formüler (`js/drug-formulary.js`) hâlâ boş; ürün bazlı kural altyapısı ayrı faz.

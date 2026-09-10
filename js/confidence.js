@@ -104,7 +104,10 @@ const ConfidenceScore = (function () {
             ? signals.temperatures.filter(t => typeof t === 'number' && isFinite(t))
             : [];
         if (temps.length > 0) {
-            const inBand = temps.filter(t => t >= PLAUSIBLE_MIN && t <= PLAUSIBLE_MAX).length / temps.length;
+            // Aralığa göre genişletilmiş bant (signals.plausibleMin/Max) varsa onu kullan
+            const pMin = (typeof signals.plausibleMin === 'number' && isFinite(signals.plausibleMin)) ? Math.min(PLAUSIBLE_MIN, signals.plausibleMin) : PLAUSIBLE_MIN;
+            const pMax = (typeof signals.plausibleMax === 'number' && isFinite(signals.plausibleMax)) ? Math.max(PLAUSIBLE_MAX, signals.plausibleMax) : PLAUSIBLE_MAX;
+            const inBand = temps.filter(t => t >= pMin && t <= pMax).length / temps.length;
             if (inBand < 0.9) {
                 // %10'dan fazla bant dışı değer felaket sinyalidir (yanlış şema,
                 // kesir kırpma...): kesinti yetmez, inceleme zorunlu.
@@ -112,7 +115,7 @@ const ConfidenceScore = (function () {
                 // genişletilmeli, kapı zayıflatılmamalı.
                 hardGate = true;
                 deduct('sicaklik-makullugu', Math.min(20, (0.9 - inBand) * 100),
-                    `Değerlerin yalnızca %${Math.round(inBand * 100)}'i ${PLAUSIBLE_MIN}…${PLAUSIBLE_MAX}°C bandında — zorunlu inceleme`);
+                    `Değerlerin yalnızca %${Math.round(inBand * 100)}'i ${pMin}…${pMax}°C bandında — zorunlu inceleme`);
             }
         }
 

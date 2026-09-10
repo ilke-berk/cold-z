@@ -55,14 +55,17 @@ window.CCPipeline = (function () {
       mkt24h: w.mkt24h,
       isOk: w.isOk,
       status: w.status || (w.isOk ? 'ok' : 'bad'),
+      freeze: !!w.freeze,
+      classification: w.classification || 'normal',
       insufficient: !!w.insufficientData,
+      insufficientWhy: w.insufficientWhy || null,
       coverageH: w.coverageHours,
       coverage: fmtDur(Math.round((w.coverageHours || 0) * 60)),
       excRange: fmtDT(w.excursionStart) + ' → ' + fmtDT(w.excursionEnd),
       range: fmtDT(w.windowStart) + ' → ' + fmtDT(w.windowEnd),
     }));
 
-    return { engineMissing: false, noData: false, triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, insufficientCount: r.insufficientCount || 0, excursionCount: r.excursionCount, windows, lo, hi };
+    return { engineMissing: false, noData: false, triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, freezeCount: r.freezeCount || 0, insufficientCount: r.insufficientCount || 0, transientCount: r.transientCount || 0, excursionCount: r.excursionCount, windows, lo, hi };
   }
   window.CCRetro = buildRetro;
 
@@ -86,12 +89,16 @@ window.CCPipeline = (function () {
       temp.push({ t: ts, v: p.temperature });
     }
 
-    // Isı maruziyet dağılımı (time-in-range)
+    // Isı maruziyet dağılımı (time-in-range) — kritik eşikler motor konfigürasyonundan
+    // (2-8 için 0 / 15; başka aralıklar için aralığa göre türetilir)
+    const engCfg = a.config || {};
+    const critLo = Number.isFinite(Number(engCfg.criticalLow)) ? Number(engCfg.criticalLow) : lo - 2;
+    const critHi = Number.isFinite(Number(engCfg.criticalHigh)) ? Number(engCfg.criticalHigh) : hi + 7;
     let ideal = 0, warn = 0, crit = 0;
     data.forEach(p => {
       const v = p.temperature;
       if (v >= lo && v <= hi) ideal++;
-      else if ((v >= 0 && v < lo) || (v > hi && v <= 15)) warn++;
+      else if ((v >= critLo && v < lo) || (v > hi && v <= critHi)) warn++;
       else crit++;
     });
     const tot = n || 1;
@@ -102,6 +109,7 @@ window.CCPipeline = (function () {
     const excursions = exc.map(e => ({
       start: fmtDT(e.start), end: fmtDT(e.end), dur: fmtDur(e.duration), durMin: Number(e.duration) || 0,
       type: e.type || 'high', peak: e.peakTemp != null ? e.peakTemp : (e.startTemp || 0),
+      transient: !!e.transient, freeze: !!e.freeze, critical: !!e.critical, classification: e.classification || 'normal',
     }));
 
     // Veri kaybı pencereleri: mutlak başlangıç/bitiş timestamp'i (ms)
@@ -115,7 +123,11 @@ window.CCPipeline = (function () {
 
     return {
       key: 'real', decision: engDec, label: LABELS[engDec] || '—', conf: dec.confidence || 0,
-      lo: lo, hi: hi,
+      lo: lo, hi: hi, critLo, critHi,
+      freezeLimit: engCfg.freezeLimit != null ? engCfg.freezeLimit : null,
+      mktMethod: mkt.method || 'unweighted',
+      torUnknownMin: Math.round((a.tor && a.tor.unknownGapMinutes) || 0),
+      transientCount: (a.excursions && a.excursions.transientCount) || 0,
       pharmacy: form.pharmacy || 'Belirtilmemiş', city: form.city || '',
       drug: form.drug || 'Belirtilmemiş', serial: form.serial || a.deviceSerial || '—',
       batch: form.batch || '—', barcode: form.barcode || '—', expiry: form.expiry || '—',
@@ -169,6 +181,9 @@ window.CCPipeline = (function () {
           resampling: false,
           onProgress: (p) => { virtual = Math.max(virtual, p); onFile(item.id, virtual, 'işleniyor'); },
           columnMapping: item.columnMapping,
+          // Güven skorunun sıcaklık-makullük bandı seçilen aralığa göre genişler
+          // (ultra soğuk −80…−60 ürünler her seferinde incelemeye düşmesin)
+          limits: { lowerLimit: Number(cfg.lowerLimit), upperLimit: Number(cfg.upperLimit) },
           // Şablon hafızası (Faz 4): UI'da hesaplanan parmak izi + eşleşme
           // bilgisi IR'a iner; bulanık eşleşme onay kapısını tetikler. Bu akış
           // Faz 3 kapısına sahip olduğundan bulanık şablona izin verilir.
@@ -319,7 +334,7 @@ window.CCPipeline = (function () {
     }
 
     const decision = DecisionEngine.evaluate(analysis);
-    onStep({ ic: 'thermo', t: 'MKT', tx: `MKT ${analysis.mkt.mkt}°C · TOR ${Math.round(analysis.tor.torMinutes)} dk hesaplandı`, st: 'ok' });
+    onStep({ ic: 'thermo', t: 'MKT', tx: `MKT ${analysis.mkt.mkt}°C (${analysis.mkt.method === 'time-weighted' ? 'zaman ağırlıklı' : 'eşit ağırlık'}) · TOR ${Math.round(analysis.tor.torMinutes)} dk hesaplandı`, st: 'ok' });
 
     if (deviceSerial && primaryFileHash) {
       fetch('/api/device-serial', {

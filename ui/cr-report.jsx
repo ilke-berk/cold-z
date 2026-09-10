@@ -60,8 +60,14 @@
   const decMeta = {
     accept: { c: 'var(--ok)', s: 'var(--okS)', hex: '#1c9961', bg: '#e9f6ee', t1: 'KABUL', sub: 'İADE ONAYLANDI' },
     conditional: { c: 'var(--amber)', s: 'var(--amberS)', hex: '#b07d18', bg: '#f7efd9', t1: 'ŞARTLI', sub: 'KOŞULLU KABUL' },
+    revize: { c: 'var(--rev, var(--amber))', s: 'var(--revS, var(--amberS))', hex: '#b07d18', bg: '#f7efd9', t1: 'REVİZE', sub: 'REVİZE İSTENDİ' },
     reject: { c: 'var(--bad)', s: 'var(--badS)', hex: '#cb3c48', bg: '#fae7e8', t1: 'RED', sub: 'İADE REDDEDİLDİ' },
   };
+  // Belge no: seri yoksa parti, o da yoksa kayıt ID'si (cr-export.jsx ile aynı kural)
+  const isBlank = v => v == null || String(v).trim() === '' || String(v).trim() === '—';
+  const docId = S => 'CC-' + (!isBlank(S.serial) ? S.serial : !isBlank(S.batch) ? S.batch : (S.savedId || S.id || 'KAYIT')) + '-2606';
+  const numOr = (v, d) => (v == null || v === '' || !isFinite(Number(v))) ? d : Number(v);
+  const fmtC = n => (Number(n) || 0).toFixed(2).replace('.', ',');
   const getDocDate = () => {
     const d = new Date();
     const pad = n => String(n).padStart(2, '0');
@@ -78,7 +84,8 @@
     const S = real || CCScenarios[sc];
     const [saveState, setSaveState] = useState(stored && stored.savedId ? 'saved' : 'idle'); // idle|saving|saved|error
     const [savedId, setSavedId] = useState(stored && stored.savedId);
-    const lo = Number(S.lo) || 2, hi = Number(S.hi) || 8;
+    const lo = numOr(S.lo, 2), hi = numOr(S.hi, 8);
+    const cl = numOr(S.critLo, lo - 2), ch = numOr(S.critHi, hi + 7);
     const m = decMeta[S.decision] || decMeta.conditional;
     const conf = S.conf;
     const tir = S.tir;
@@ -234,7 +241,7 @@
                   <thead><tr>{['Sapma', 'Sapma Aralığı', 'Geriye Dönük 24 Saatlik Aralık', 'Kapsam', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
                   <tbody>
                     {(openRetro ? retroRows : retroRows.slice(0, PREVIEW)).map((w, i) => {
-                      const bad = w.status === 'bad' || (w.status == null && !w.isOk);
+                      const bad = w.status === 'bad' || w.status === 'freeze' || (w.status == null && !w.isOk);
                       const c = bad ? 'var(--bad)' : w.insufficient ? 'var(--amber)' : 'var(--ok)';
                       return (
                         <tr key={i} style={{ cursor: 'default' }}>
@@ -243,7 +250,7 @@
                           <td className="cr-m" style={{ color: 'var(--t2)' }}>{w.range}</td>
                           <td className="cr-m" style={{ color: w.insufficient ? 'var(--amber)' : 'var(--t3)' }}>{w.coverage || '—'}</td>
                           <td className="cr-m" style={{ fontWeight: 600, color: bad ? 'var(--bad)' : 'var(--tx)' }}>{w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
-                          <td><span className="an-st" style={{ color: c, background: 'transparent', padding: 0 }}><i style={{ width: 5, height: 5, borderRadius: '50%', background: c }} />{bad ? 'İHLAL' : w.insufficient ? 'YETERSİZ VERİ' : 'UYGUN'}</span></td>
+                          <td><span className="an-st" style={{ color: c, background: 'transparent', padding: 0 }}><i style={{ width: 5, height: 5, borderRadius: '50%', background: c }} />{w.status === 'freeze' ? 'DONMA' : bad ? 'İHLAL' : w.insufficient ? 'YETERSİZ VERİ' : 'UYGUN'}</span></td>
                         </tr>);
                     })}
                   </tbody>
@@ -286,7 +293,7 @@
                         <td className="cr-m">{x.start}</td>
                         <td className="cr-m">{x.end}</td>
                         <td className="cr-m" style={{ fontWeight: 600 }}>{x.dur}</td>
-                        <td style={{ color: 'var(--t2)' }}>{x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık'}{i === li && excursions.length > 1 ? ' · en uzun' : ''}</td>
+                        <td style={{ color: 'var(--t2)' }}>{x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık'}{x.freeze ? ' · donma' : x.transient ? ' · anlık' : ''}{i === li && excursions.length > 1 ? ' · en uzun' : ''}</td>
                         <td className="cr-m" style={{ fontWeight: 700, color: out ? 'var(--bad)' : 'var(--ok)' }}>{Number(x.peak).toFixed(2)}°C</td>
                       </tr>);
                   })}
@@ -320,7 +327,7 @@
           <div className="cr-ph"><div className="cr-pt">MEVZUAT REFERANSI</div></div>
           <div style={{ padding: 18 }}>
             <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 10 }}>{S.gdp}</div>
-            <div className="rp-ref">Standart 2–8°C TİTCK prosedürleri uygulanmıştır. Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası ve {S.gap} dk kayıt aralığı analiz edilmiştir.</div>
+            <div className="rp-ref">{lo}–{hi}°C saklama aralığı için TİTCK prosedürleri uygulanmıştır. Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası ve {S.gap} dk kayıt aralığı analiz edilmiştir{S.mktMethod === 'time-weighted' ? '; MKT zaman ağırlıklı hesaplanmıştır' : ''}.</div>
           </div>
         </div>
 
@@ -346,9 +353,9 @@
           <table className="rp-certTbl">
             <thead><tr><th>Parametre</th><th>Ölçülen</th><th>Kabul Limiti</th><th>Durum</th></tr></thead>
             <tbody>
-              {[['Ortalama Kinetik (MKT)', S.mkt.toFixed(2) + '°C', '2,00 – 8,00°C', S.mkt >= 2 && S.mkt <= 8],
-                ['Minimum Sıcaklık', S.min.toFixed(1) + '°C', '≥ 2,0°C', S.min >= 2],
-                ['Maksimum Sıcaklık', S.max.toFixed(1) + '°C', '≤ 8,0°C', S.max <= 8],
+              {[['Ortalama Kinetik (MKT)', S.mkt.toFixed(2) + '°C', fmtC(lo) + ' – ' + fmtC(hi) + '°C', S.mkt >= lo && S.mkt <= hi],
+                ['Minimum Sıcaklık', S.min.toFixed(1) + '°C', '≥ ' + fmtC(lo) + '°C', S.min >= lo],
+                ['Maksimum Sıcaklık', S.max.toFixed(1) + '°C', '≤ ' + fmtC(hi) + '°C', S.max <= hi],
                 ['Buzdolabı Dışı (TOR)', S.torUsed + ' dk', '≤ ' + S.torLimit + ' dk', S.torUsed <= S.torLimit]].map((r, i) => (
                 <tr key={i}><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td>
                   <td><span className="rp-cbd" style={{ color: r[3] ? '#1c9961' : '#cb3c48', background: r[3] ? '#e9f6ee' : '#fae7e8' }}>{r[3] ? 'UYGUN' : 'İHLAL'}</span></td></tr>))}
@@ -357,7 +364,7 @@
           <div className="rp-sig">
             <div>
               <div className="rp-sigT">SİSTEM REFERANSI</div>
-              <div className="rp-sigSub" style={{ marginTop: 8 }}>ColdChain AI v2.1 Verification Service<br />Belge ID: CC-{S.serial}-2606</div>
+              <div className="rp-sigSub" style={{ marginTop: 8 }}>ColdChain AI v2.1 Verification Service<br />Belge ID: {docId(S)}</div>
             </div>
             <div>
               <div className="rp-sigT">KALİTE GÜVENCE MÜDÜRÜ ONAYI</div>
@@ -375,7 +382,7 @@
         <div className="cr-pn" style={{ marginBottom: 16 }}>
           <div className="cr-ph"><div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> ISI MARUZİYET DAĞILIMI</div></div>
           <div style={{ padding: 18 }}>
-            {[['İdeal · 2–8°C', tir.ideal, 'var(--ok)'], ['Hafif ihlal · 0–2 / 8–15°C', tir.warn, 'var(--amber)'], ['Kritik · <0 / >15°C', tir.crit, 'var(--bad)']].map(([l, v, c]) => (
+            {[[`İdeal · ${lo}–${hi}°C`, tir.ideal, 'var(--ok)'], [`Hafif ihlal · ${cl}–${lo} / ${hi}–${ch}°C`, tir.warn, 'var(--amber)'], [`Kritik · <${cl} / >${ch}°C`, tir.crit, 'var(--bad)']].map(([l, v, c]) => (
               <div key={l} className="rp-tirRow">
                 <div className="rp-tirL"><span style={{ color: 'var(--t2)' }}>{l}</span><b className="cr-m" style={{ color: c }}>%{v}</b></div>
                 <div className="rp-bar"><div className="rp-barf" style={{ width: v + '%', background: c }} /></div>

@@ -3,13 +3,24 @@
  * TİTCK GDP kılavuzuna göre karar motoru
  */
 const DecisionEngine = {
+    // Karar şiddeti sırası: bir bulgu kararı yalnızca YUKARI taşıyabilir.
+    //   accept      — sorun yok
+    //   conditional — veri sağlam ama sistem tek başına karar veremiyor (eczacı değerlendirmesi)
+    //   revize      — veri bütünlüğü/sıklığı sorunlu, eczaneden düzgün rapor istenir
+    //   reject      — ihlal
+    RANK: { accept: 0, conditional: 1, revize: 2, reject: 3 },
+
     evaluate(analysisResult) {
         const { compliance, validation } = analysisResult;
+        const cfg = analysisResult.config || {};
+        const lo = Number.isFinite(Number(cfg.lowerLimit)) ? Number(cfg.lowerLimit) : 2;
+        const hi = Number.isFinite(Number(cfg.upperLimit)) ? Number(cfg.upperLimit) : 8;
         const reasons = [];
         let decision = 'accept';
         let confidence = 100;
+        const escalate = (to) => { if ((this.RANK[to] || 0) > (this.RANK[decision] || 0)) decision = to; };
 
-        // 1. Yeni Kabul/Red Şartları (Compliance Engine Sonuçları)
+        // 1. Kabul/Red Şartları (Compliance Engine Sonuçları)
         if (compliance.status === 'fail') {
             decision = 'reject';
             // Sadece RED nedenlerini ekle
@@ -19,11 +30,21 @@ const DecisionEngine = {
             confidence -= 40;
         }
 
+        // 1b. Donma — MKT ile telafi EDİLEMEZ (compliance kritik eşiği zaten
+        // yakalar; geriye dönük kontrol donmayı ayrıca işaretlediğinde de RED)
+        const retro = analysisResult.retrospectiveMKT;
+        if (retro && retro.freezeCount > 0 && decision !== 'reject') {
+            decision = 'reject';
+            const fw = retro.windows.find(w => w.status === 'freeze');
+            reasons.push(`❌ RED SEBEBİ: Donma tespiti — sıcaklık ${cfg.freezeLimit != null ? cfg.freezeLimit : 0}°C altına indi (en düşük ${fw ? fw.peakTemp : '?'}°C). Donma hasarı geri dönüşsüzdür; 24h MKT değeri bu durumda telafi sayılmaz.`);
+            confidence -= 40;
+        }
+
         // 2. ANTI-FRAUD (Sahtecilik ve Anomali Tespiti)
         // 2a. Sentetik (Sahte) Veri Kontrolü: Doğal bir buzdolabı kompresörü her zaman dalgalanma yaratır.
         // Eğer veride olağandışı bir "kusursuzluk" varsa (Standart sapma çok düşükse) ve yeterince veri varsa
         if (analysisResult.mkt && analysisResult.mkt.stdDev < 0.2 && analysisResult.dataPoints > 100) {
-            if (decision !== 'reject') decision = 'revize';
+            escalate('revize');
             reasons.push(`🚨 ANTI-FRAUD: Standart sapma (${analysisResult.mkt.stdDev}) olağandışı düşük. Sıcaklık verileri doğal donanım gürültüsü barındırmıyor, Excel vb. yazılımlarla "sentetik (sahte)" üretilmiş kusursuz veri kalıbı olabilir!`);
             confidence -= 60;
         }
@@ -62,7 +83,7 @@ const DecisionEngine = {
                 const dataEnd = new Date(analysisResult.timespan.end).getTime();
                 // Eğer doküman, veriler henüz bitmeden önce yaratılmış görünüyorsa (imkansız durum)
                 if (!isNaN(docDate) && !isNaN(dataEnd) && docDate < dataEnd - (24 * 60 * 60 * 1000)) {
-                    if (decision !== 'reject') decision = 'revize';
+                    escalate('revize');
                     reasons.push(`⚠️ ANTI-FRAUD: Belgedeki PDF oluşturulma tarihi, içindeki son veri kaydından daha eski. Rapor üzerinde PDF düzenleyici ile tarih manipülasyonu yapılmış olabilir.`);
                     confidence -= 50;
                 }
@@ -78,11 +99,11 @@ const DecisionEngine = {
             const maxGap = validation.gaps.length > 0 ? Math.max(...validation.gaps.map(g => g.minutes)) : 0;
 
             if (validation.mostCommonGapMin > 60) {
-                if (decision !== 'reject') decision = 'revize';
+                escalate('revize');
                 reasons.push(`⚠️ REVİZE: Veriler arasında kayıt aralığı ${Utils.formatDuration(validation.mostCommonGapMin)}. 1 saati aşan kayıt aralıkları nedeniyle eczaneden düzgün rapor talebinde bulunulması gerekmektedir.`);
                 confidence -= 40;
             } else if (maxGap > 300) { // 5 saat limit
-                if (decision !== 'reject') decision = 'revize';
+                escalate('revize');
                 reasons.push(`⚠️ REVİZE: Rapor içerisinde ${Utils.formatDuration(maxGap)} bulan veri kaybı tespit edildi. Veri bütünlüğü için manuel kontrol gerekmektedir.`);
                 confidence -= 50;
             } else if (validation.hasCriticalGap) {
@@ -90,13 +111,39 @@ const DecisionEngine = {
             }
         }
 
-        /* TOR (Stability Budget) Kontrolü — Şimdilik Devre Dışı
-        if (analysisResult.tor && analysisResult.tor.status === 'exceeded') {
-            decision = 'reject';
-            reasons.push(`❌ RED SEBEBİ: Buzdolabı dışı kalma süresi (TOR) limiti aşıldı (${Utils.formatDuration(analysisResult.tor.torMinutes)} / ${Utils.formatDuration(analysisResult.tor.torLimit)}).`);
-            confidence -= 50;
+        // 3b. TOR (Stabilite Bütçesi) Kontrolü
+        // Ürün bazlı stabilite verisi (formüler) olmadan TOR aşımı tek başına
+        // RED gerekçesi yapılmaz — ama sessizce de geçilmez: karar ŞARTLI'ya
+        // yükselir, eczacı ürünün üretici stabilite verisiyle değerlendirir.
+        // TOR yalnızca üst limit ÜSTÜ süredir; logger kesintileri sayılmaz
+        // (tor.unknownGapMinutes ayrıca raporlanır).
+        const tor = analysisResult.tor;
+        if (tor && tor.status === 'exceeded') {
+            escalate('conditional');
+            reasons.push(`⚠️ ŞARTLI: Buzdolabı dışı kalma süresi (TOR) limiti aşıldı (${Utils.formatDuration(tor.torMinutes)} / ${Utils.formatDuration(tor.torLimit)}). Ürünün üretici stabilite verisiyle eczacı değerlendirmesi gerekir.`);
+            confidence -= 25;
+        } else if (tor && tor.status === 'warning') {
+            reasons.push(`⚠️ BİLGİ: TOR bütçesinin %${tor.usedPercentage}'i kullanıldı (${Utils.formatDuration(tor.torMinutes)} / ${Utils.formatDuration(tor.torLimit)}).`);
         }
-        */
+        if (tor && tor.unknownGapMinutes > 0) {
+            reasons.push(`⚠️ BİLGİ: ${Utils.formatDuration(tor.unknownGapMinutes)} veri boşluğu boyunca sıcaklık bilinmiyor; bu süre TOR ve MKT'ye dahil edilmedi.`);
+        }
+
+        // 3c. Yetersiz veriyle değerlendirilemeyen sapmalar → ŞARTLI
+        // "İhlal sayılmaz" doğru, ama "temiz kabul" de değil: sistem karar
+        // veremediğini söyler, eczacı değerlendirir.
+        const insufficient = (compliance.insufficientReasons || []).length;
+        if (insufficient > 0) {
+            escalate('conditional');
+            reasons.push(`⚠️ ŞARTLI: ${insufficient} sapma için geriye dönük 24 saatlik veri yetersiz; MKT ile değerlendirilemedi. Eczacı değerlendirmesi gerekir.`);
+            compliance.insufficientReasons.forEach(r => reasons.push(`   · ${r}`));
+            confidence -= 15;
+        }
+
+        // 3d. Anlık sapmalar (bilgi — karara etki etmez)
+        if (compliance.transientCount > 0) {
+            reasons.push(`💡 Bilgilendirme: ${compliance.transientCount} anlık sapma (kısa süreli, limite yakın tek okuma) kapı açılışı/sensör gürültüsü olarak değerlendirildi ve ihlal sayılmadı.`);
+        }
 
         // 4. Veri Kapsamı Kontrolü (Satın Alma - İade Arası)
         // Eğer kullanıcı tarih girmemişse veya geçersizse, belgedeki tarihleri referans al
@@ -116,19 +163,19 @@ const DecisionEngine = {
         const margin = 6 * 60 * 60 * 1000;
 
         if (dataStart !== null && userStart !== null && dataStart > (userStart + margin)) {
-            if (decision !== 'reject') decision = 'revize';
+            escalate('revize');
             reasons.push(`⚠️ REVİZE: Veri başlangıcı satın alma tarihinden sonradır. (Eksik gün tespiti)`);
             confidence -= 30;
         }
         if (dataEnd !== null && userEnd !== null && dataEnd < (userEnd - margin)) {
-            if (decision !== 'reject') decision = 'revize';
+            escalate('revize');
             reasons.push(`⚠️ REVİZE: Veri bitişi iade talebi tarihinden öncedir. (Eksik gün tespiti)`);
             confidence -= 30;
         }
 
         // 5. Pozitif Bilgiler ve MKT Özetleri (Sadece gerekli olduğunda)
         if (decision === 'accept') {
-            reasons.push('✅ Sıcaklık rejimi (2-8°C) korunmuştur.');
+            reasons.push(`✅ Sıcaklık rejimi (${lo}-${hi}°C) korunmuştur.`);
 
             // Gelen verilerde atlanmış/kayıp veri var ise bildir
             if (validation && validation.hasCriticalGap && !validation.isFrequencyIssue) {
@@ -163,7 +210,7 @@ const DecisionEngine = {
             accept: 'İlaç soğuk zincir koşullarını karşılamaktadır. Kabul edilebilir.',
             reject: 'İlaç soğuk zincir koşullarını karşılamamaktadır. İade edilmelidir.',
             revize: 'Veri bütünlüğü veya kayıt sıklığı sorunlu. Eczaneden düzgün rapor talebinde bulunulması gerekmektedir.',
-            conditional: 'İlaç belirli koşullar altında kabul edilebilir. Eczacı değerlendirmesi gereklidir.'
+            conditional: 'Sistem tek başına karar veremedi (TOR bütçesi aşımı veya değerlendirilemeyen sapma). Eczacı değerlendirmesi gereklidir.'
         };
         return summaries[decision];
     },

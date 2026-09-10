@@ -509,6 +509,13 @@ const DataParser = {
         if (metadata && metadata.extraction && typeof ConfidenceScore !== 'undefined') {
             const ext = metadata.extraction;
             ext.dedupRemoved = (ext.dedupRemoved || 0) + dupCount;
+            // Makullük bandı seçilen saklama aralığına göre genişler (varsayılan
+            // −30…+40; dondurulmuş / ultra soğuk ürünlerde alt sınır aralığın 20°C altı)
+            const lim = options && options.limits;
+            if (lim && isFinite(Number(lim.lowerLimit)) && isFinite(Number(lim.upperLimit))) {
+                ext.plausibleMin = Math.min(-30, Number(lim.lowerLimit) - 20);
+                ext.plausibleMax = Math.max(40, Number(lim.upperLimit) + 20);
+            }
             ext.confidence = this.recomputeConfidence(data, metadata);
             const c = ext.confidence;
             log.push({

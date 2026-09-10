@@ -92,16 +92,29 @@
     return { count: (ex || []).length, low, high, total, longest, li };
   }
 
-  const statsRows = S => ([
-    ['Ortalama Kinetik Sıcaklık (MKT)', S.mkt.toFixed(2) + ' °C', '2,00 – 8,00 °C', S.mkt >= 2 && S.mkt <= 8],
-    ['Minimum Sıcaklık',                S.min.toFixed(2) + ' °C', '≥ 2,00 °C',      S.min >= 2],
-    ['Maksimum Sıcaklık',               S.max.toFixed(2) + ' °C', '≤ 8,00 °C',      S.max <= 8],
-    ['Ortalama Sıcaklık',               S.mean.toFixed(2) + ' °C', '2,00 – 8,00 °C', S.mean >= 2 && S.mean <= 8],
+  /* Kabul aralığı: seçilen aralık (2–8 varsayılan) + motorun kritik eşikleri */
+  const numOr = (v, d) => (v == null || v === '' || !isFinite(Number(v))) ? d : Number(v);
+  const fmtC = n => (Number(n) || 0).toFixed(2).replace('.', ',');
+  const rangeOf = S => {
+    const lo = numOr(S.lo, 2), hi = numOr(S.hi, 8);
+    return { lo, hi, cl: numOr(S.critLo, lo - 2), ch: numOr(S.critHi, hi + 7) };
+  };
+  const tirLabels = S => {
+    const r = rangeOf(S);
+    return [`İdeal · ${r.lo}–${r.hi} °C`, `Hafif ihlal · ${r.cl}–${r.lo} / ${r.hi}–${r.ch} °C`, `Kritik · <${r.cl} / >${r.ch} °C`];
+  };
+  const excTypeLabel = x => (x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık') + (x.freeze ? ' · donma' : x.transient ? ' · anlık' : '');
+
+  const statsRows = S => { const r = rangeOf(S); return [
+    ['Ortalama Kinetik Sıcaklık (MKT)', S.mkt.toFixed(2) + ' °C', fmtC(r.lo) + ' – ' + fmtC(r.hi) + ' °C', S.mkt >= r.lo && S.mkt <= r.hi],
+    ['Minimum Sıcaklık',                S.min.toFixed(2) + ' °C', '≥ ' + fmtC(r.lo) + ' °C',      S.min >= r.lo],
+    ['Maksimum Sıcaklık',               S.max.toFixed(2) + ' °C', '≤ ' + fmtC(r.hi) + ' °C',      S.max <= r.hi],
+    ['Ortalama Sıcaklık',               S.mean.toFixed(2) + ' °C', fmtC(r.lo) + ' – ' + fmtC(r.hi) + ' °C', S.mean >= r.lo && S.mean <= r.hi],
     ['Buzdolabı Dışı Süre (TOR)',       S.torUsed.toLocaleString('tr-TR') + ' dk' + (S.torUsed >= 120 ? ' · ' + fmtLong(S.torUsed) : ''), '≤ ' + S.torLimit + ' dk', S.torUsed <= S.torLimit],
     ['Kayıt Aralığı',                   S.gap + ' dk',            '≤ 60 dk',         S.gap <= 60],
-    ['Sapma Sayısı',                    S.excCount + ' adet',     'bilgi',           null],
+    ['Sapma Sayısı',                    S.excCount + ' adet' + (S.transientCount ? ' (+' + S.transientCount + ' anlık)' : ''), 'bilgi', null],
     ['Ölçüm Noktası',                   S.points.toLocaleString('tr-TR'), 'bilgi',  null],
-  ]);
+  ]; };
 
   /* =========================================================
      1) TEMİZ A4 YAZDIR / PDF BELGESİ  (body > #print-root portala)
@@ -229,7 +242,7 @@
         <td className="m" style={{ color: '#475569' }}>{w.range}</td>
         <td className="m" style={{ color: w.insufficient ? '#b45309' : '#475569' }}>{w.coverage}</td>
         <td className="m" style={{ fontWeight: 600, color: w.status === 'bad' ? '#cb3c48' : w.insufficient ? '#94a3b8' : '#334155' }}>{w.mkt24h != null ? w.mkt24h + ' °C' : '—'}</td>
-        <td style={{ textAlign: 'right' }}><span className="pd-bd" style={{ color: w.status === 'bad' ? '#cb3c48' : w.insufficient ? '#b45309' : '#1c9961', background: w.status === 'bad' ? '#fae7e8' : w.insufficient ? '#fef3c7' : '#e9f6ee' }}>{w.status === 'bad' ? 'İHLAL' : w.insufficient ? 'YETERSİZ VERİ' : 'UYGUN'}</span></td>
+        <td style={{ textAlign: 'right' }}><span className="pd-bd" style={{ color: (w.status === 'bad' || w.status === 'freeze') ? '#cb3c48' : w.insufficient ? '#b45309' : '#1c9961', background: (w.status === 'bad' || w.status === 'freeze') ? '#fae7e8' : w.insufficient ? '#fef3c7' : '#e9f6ee' }}>{w.status === 'freeze' ? 'DONMA' : w.status === 'bad' ? 'İHLAL' : w.insufficient ? 'YETERSİZ VERİ' : 'UYGUN'}</span></td>
       </tr>);
     const doc = (
       <div className="pd">
@@ -314,7 +327,7 @@
         {/* Isı maruziyet dağılımı (yüzdeler 1. sayfada, sabit sütunda) */}
         <section className="pd-block">
           <div className="pd-st">Isı Maruziyet Dağılımı</div>
-          {[['İdeal · 2–8 °C', tir.ideal, '#1c9961'], ['Hafif ihlal · 0–2 / 8–15 °C', tir.warn, '#b07d18'], ['Kritik · <0 / >15 °C', tir.crit, '#cb3c48']].map(([l, v, c]) => (
+          {(() => { const L = tirLabels(S); return [[L[0], tir.ideal, '#1c9961'], [L[1], tir.warn, '#b07d18'], [L[2], tir.crit, '#cb3c48']]; })().map(([l, v, c]) => (
             <div key={l} className="pd-tir">
               <span>{l}</span>
               <div className="pd-bar"><div className="pd-barf" style={{ width: v + '%', background: c }} /></div>
@@ -359,10 +372,10 @@
         <section className="pd-block">
           <div className="pd-st">Sıcaklık Profili · Ölçüm Süresi</div>
           <div className="pd-chart">
-            <CCTempChart data={S.temp} w={700} h={180} color="#0f81a8" band={[2, 8]}
+            <CCTempChart data={S.temp} w={700} h={180} color="#0f81a8" band={[rangeOf(S).lo, rangeOf(S).hi]}
               gridColor="#eef2f6" axisColor="#94a3b8" bandColor="rgba(28,153,97,.12)" fill={true} />
           </div>
-          <div className="pd-cap">Yeşil bant: 2–8 °C kabul aralığı · Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası · {S.gap} dk kayıt aralığı</div>
+          <div className="pd-cap">Yeşil bant: {rangeOf(S).lo}–{rangeOf(S).hi} °C kabul aralığı · Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası · {S.gap} dk kayıt aralığı{S.mktMethod === 'time-weighted' ? ' · MKT zaman ağırlıklı' : ''}</div>
         </section>
 
         {/* Veri bütünlüğü + Mevzuat (yan yana) */}
@@ -375,7 +388,7 @@
           <div>
             <div className="pd-st">Mevzuat Referansı</div>
             <div className="pd-reg">
-              <b>{S.gdp}</b> · Standart 2–8 °C TİTCK saklama prosedürleri uygulanmıştır.
+              <b>{S.gdp}</b> · {rangeOf(S).lo}–{rangeOf(S).hi} °C saklama aralığı için TİTCK prosedürleri uygulanmıştır.
               Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası, {S.gap} dk kayıt aralığı ve {S.torUsed.toLocaleString('tr-TR')} dk ({fmtLong(S.torUsed)}) buzdolabı dışı süre (TOR) baz alınarak değerlendirilmiştir.
             </div>
           </div>
@@ -419,7 +432,7 @@
                       <td className="m">{x.start}</td>
                       <td className="m">{x.end}</td>
                       <td className="m" style={{ fontWeight: 600 }}>{x.dur}</td>
-                      <td>{x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık'}{i === EX.li && EX.count > 1 ? ' · en uzun' : ''}</td>
+                      <td>{excTypeLabel(x)}{i === EX.li && EX.count > 1 ? ' · en uzun' : ''}</td>
                       <td className="m" style={{ textAlign: 'right', fontWeight: 700, color: x.peak > 8 || x.peak < 2 ? '#cb3c48' : '#1c9961' }}>{x.peak.toFixed(2)} °C</td>
                     </tr>))}
                 </tbody>
@@ -506,14 +519,14 @@
 
       /* --- Sapmalar --- */
       const sapma = [['#', 'Başlangıç', 'Bitiş', 'Süre', 'Tür', 'Tepe (°C)'],
-        ...S.excursions.map((x, i) => [i + 1, x.start, x.end, x.dur, x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık', x.peak])];
+        ...S.excursions.map((x, i) => [i + 1, x.start, x.end, x.dur, excTypeLabel(x), x.peak])];
       const wsSapma = XLSX.utils.aoa_to_sheet(sapma);
       wsSapma['!cols'] = [{ wch: 5 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 10 }];
       XLSX.utils.book_append_sheet(wb, wsSapma, 'Sapmalar');
 
       /* --- Isı dağılımı --- */
       const dagilim = [['Dilim', 'Aralık', 'Oran (%)'],
-        ['İdeal', '2–8 °C', S.tir.ideal], ['Hafif ihlal', '0–2 / 8–15 °C', S.tir.warn], ['Kritik', '<0 / >15 °C', S.tir.crit]];
+        ['İdeal', `${rangeOf(S).lo}–${rangeOf(S).hi} °C`, S.tir.ideal], ['Hafif ihlal', `${rangeOf(S).cl}–${rangeOf(S).lo} / ${rangeOf(S).hi}–${rangeOf(S).ch} °C`, S.tir.warn], ['Kritik', `<${rangeOf(S).cl} / >${rangeOf(S).ch} °C`, S.tir.crit]];
       const wsDag = XLSX.utils.aoa_to_sheet(dagilim);
       wsDag['!cols'] = [{ wch: 16 }, { wch: 18 }, { wch: 10 }];
       XLSX.utils.book_append_sheet(wb, wsDag, 'Isı Dağılımı');

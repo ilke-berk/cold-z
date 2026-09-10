@@ -96,7 +96,7 @@
   }
 
   function statusBadge(state) {
-    const m = { ok: ['var(--ok)', 'UYGUN'], warn: ['var(--amber)', 'SINIRDA'], bad: ['var(--bad)', 'İHLAL'], insufficient: ['var(--amber)', 'YETERSİZ VERİ'] }[state];
+    const m = { ok: ['var(--ok)', 'UYGUN'], warn: ['var(--amber)', 'SINIRDA'], bad: ['var(--bad)', 'İHLAL'], freeze: ['var(--bad)', 'DONMA'], insufficient: ['var(--amber)', 'YETERSİZ VERİ'] }[state] || ['var(--t3)', String(state || '—').toUpperCase()];
     return <span className="an-st" style={{ color: m[0], background: 'transparent', padding: 0 }}><i style={{ background: m[0] }} />{m[1]}</span>;
   }
 
