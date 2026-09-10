@@ -4,8 +4,13 @@
   "description": "ColdChain AI — Soğuk Zincir İade Otomasyon Sistemi",
   "main": "main.js",
   "scripts": {
+    "build:ui": "node scripts/build-ui.js",
+    "dev:ui": "node scripts/build-ui.js --watch",
+    "prestart": "npm run build:ui",
     "start": "node --use-system-ca server.js",
+    "preapp": "npm run build:ui",
     "app": "electron .",
+    "prebuild": "npm run build:ui",
     "build": "electron-builder",
     "test": "node --test \"tests/**/*.test.js\""
   },
@@ -17,6 +22,8 @@
     "multer": "^1.4.5-lts.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^3.11.174",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "xlsx": "^0.18.5"
@@ -37,6 +44,10 @@
     }
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/preset-react": "^7.29.7",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
     "electron": "^41.0.2",
     "electron-builder": "^26.8.1"
   },

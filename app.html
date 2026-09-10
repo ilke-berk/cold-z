@@ -4,9 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ColdChain AI — Kontrol Odası</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Fontlar yerel (web/vendor/fonts.css — scripts/build-ui.js üretir); CDN yok -->
+  <link href="web/vendor/fonts.css" rel="stylesheet">
   <style>
     html, body { margin: 0; padding: 0; height: 100%; background: #0a0e14; overflow: hidden; }
     * { -webkit-font-smoothing: antialiased; }
@@ -25,14 +24,16 @@
   <div id="print-root"></div>
   <div class="cc-boot" id="ccBoot"><div style="text-align:center"><div class="ring"></div><div class="lbl">ColdChain AI yükleniyor…</div></div></div>
 
-  <!-- Üçüncü taraf: Excel + PDF okuma -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-
-  <!-- React + Babel -->
-  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <!-- Üçüncü taraf kütüphaneler: YEREL (web/vendor, scripts/build-ui.js üretir).
+       Hiçbir CDN bağımlılığı yok; arayüz internetsiz / proxy arkasında da açılır.
+       Sürümler: web/vendor/VERSIONS.json -->
+  <script src="web/vendor/xlsx.full.min.js" onerror="window.__ccVendorMissing = true"></script>
+  <script src="web/vendor/pdf.min.js" onerror="window.__ccVendorMissing = true"></script>
+  <script>
+    if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'web/vendor/pdf.worker.min.js';
+  </script>
+  <script src="web/vendor/react.min.js" onerror="window.__ccVendorMissing = true"></script>
+  <script src="web/vendor/react-dom.min.js" onerror="window.__ccVendorMissing = true"></script>
 
   <!-- Analiz motorları (mevcut backend ile aynı çekirdek) -->
   <script src="date-format-detector.js"></script>
@@ -53,30 +54,45 @@
   <script src="ui/cc-store.js"></script>
   <script src="ui/cc-pipeline.js"></script>
 
-  <!-- Kontrol Odası arayüzü (React/JSX) -->
-  <script type="text/babel" src="ui/cc-shared.jsx"></script>
-  <script type="text/babel" src="ui/dir-controlroom.jsx"></script>
-  <script type="text/babel" src="ui/cr-scan.jsx"></script>
-  <script type="text/babel" src="ui/cr-decisionchart.jsx"></script>
-  <script type="text/babel" src="ui/cr-pdfpreview.jsx"></script>
-  <script type="text/babel" src="ui/cr-login.jsx"></script>
-  <script type="text/babel" src="ui/cr-upload.jsx"></script>
-  <script type="text/babel" src="ui/cr-analysis.jsx"></script>
-  <script type="text/babel" src="ui/cr-export.jsx"></script>
-  <script type="text/babel" src="ui/cr-report.jsx"></script>
-  <script type="text/babel" src="ui/cr-settings.jsx"></script>
-  <script type="text/babel" src="ui/cr-templates.jsx"></script>
-  <script type="text/babel" src="ui/cr-audit.jsx"></script>
-  <script type="text/babel" src="ui/cr-app.jsx"></script>
+  <!-- Kontrol Odası arayüzü: ui/*.jsx → web/ui/*.js (önceden derlenmiş; tarayıcıda Babel yok).
+       Kaynak ui/ altında; "npm run build:ui" (veya geliştirmede "npm run dev:ui") derler. -->
+  <script src="web/ui/cc-shared.js"></script>
+  <script src="web/ui/dir-controlroom.js"></script>
+  <script src="web/ui/cr-scan.js"></script>
+  <script src="web/ui/cr-decisionchart.js"></script>
+  <script src="web/ui/cr-pdfpreview.js"></script>
+  <script src="web/ui/cr-login.js"></script>
+  <script src="web/ui/cr-upload.js"></script>
+  <script src="web/ui/cr-analysis.js"></script>
+  <script src="web/ui/cr-export.js"></script>
+  <script src="web/ui/cr-report.js"></script>
+  <script src="web/ui/cr-settings.js"></script>
+  <script src="web/ui/cr-templates.js"></script>
+  <script src="web/ui/cr-audit.js"></script>
+  <script src="web/ui/cr-app.js"></script>
 
-  <script type="text/babel" data-presets="env,react">
-    const start = () => {
-      if (!window.CRApp || !window.CRShell) return setTimeout(start, 30);
-      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(window.CRApp));
-      const boot = document.getElementById('ccBoot');
-      if (boot) { boot.classList.add('hide'); setTimeout(() => boot.remove(), 400); }
-    };
-    start();
+  <script>
+    (function () {
+      var tries = 0;
+      var start = function () {
+        if (window.CRApp && window.CRShell && window.React && window.ReactDOM) {
+          ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(window.CRApp));
+          var boot = document.getElementById('ccBoot');
+          if (boot) { boot.classList.add('hide'); setTimeout(function () { boot.remove(); }, 400); }
+          return;
+        }
+        if (++tries > 100 || window.__ccVendorMissing) {
+          // Derlenmemiş kurulum: sonsuz spinner yerine ne yapılacağını söyle
+          var lbl = document.querySelector('#ccBoot .lbl');
+          if (lbl) lbl.innerHTML = 'Arayüz dosyaları bulunamadı (web/ klasörü yok).<br>Proje dizininde <code>npm run build:ui</code> çalıştırıp sayfayı yenileyin.';
+          var ring = document.querySelector('#ccBoot .ring');
+          if (ring) ring.style.display = 'none';
+          return;
+        }
+        setTimeout(start, 30);
+      };
+      start();
+    })();
   </script>
 </body>
 </html>

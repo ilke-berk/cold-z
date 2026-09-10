@@ -174,6 +174,17 @@
     const [rowEdits, setRowEdits] = useState({});    // {fileId: {idx: {temp, exclude}}}
     const [pageImgs, setPageImgs] = useState({});    // {fileId: {url, page}}
     const parseCacheRef = useRef({});                // ikinci koşuda AI/parse maliyetini sıfırlar
+    // AI (Gemini) erişilebilirliği: yalnızca taranmış PDF/görüntü OCR'ı ve yeni PDF
+    // formatlarının şema keşfi AI ister. Excel/CSV ve öğrenilmiş şablonlar AI'sız
+    // çalışır — AI yoksa uygulama kapanmaz, yalnızca o yol kapalı diye söylenir.
+    const [ai, setAi] = useState(undefined);         // undefined=sorgulanıyor | {serverReady, geminiReady}
+    useEffect(() => {
+      let alive = true;
+      fetch('/api/health').then(r => r.json())
+        .then(j => { if (alive) setAi({ serverReady: true, geminiReady: !!j.geminiReady }); })
+        .catch(() => { if (alive) setAi({ serverReady: false, geminiReady: false }); });
+      return () => { alive = false; };
+    }, []);
 
     // İnceleme açıldığında düşük güvenli satırların kaynak sayfasını render et
     // (dosya başına bir görüntü: ilk düşük güvenli satırın sayfası).
@@ -578,6 +589,17 @@
           <div><div className="cr-h1">Veri Yükleme</div><div className="cr-h1sub">Adım {step} / 3 · {STEPS[step - 1].lbl}</div></div>
           <button className="cr-btn cr-btn2" onClick={() => onNav('dashboard')}><Ic.chevL size={15} /> KONTROL PANELİ</button>
         </div>
+        {ai && !ai.geminiReady && (
+          <div className="cr-pn" data-testid="ai-offline" style={{ padding: '12px 16px', marginBottom: 14, borderColor: 'var(--amber)', fontSize: 12.5, display: 'flex', gap: 10, alignItems: 'flex-start', color: 'var(--t2)' }}>
+            <Ic.alert size={16} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <b style={{ color: 'var(--tx)' }}>{ai.serverReady ? 'Yapay zeka (OCR) şu an kullanılamıyor.' : 'Sunucuya ulaşılamıyor.'}</b>{' '}
+              {ai.serverReady
+                ? 'API anahtarı tanımlı değil veya Gemini erişilemiyor. Excel/CSV dosyaları ve daha önce öğrenilmiş PDF şablonları AI olmadan çözülmeye devam eder; taranmış PDF / fotoğraf ve yeni PDF formatları bekletilir.'
+                : 'Analiz, kayıt ve denetim izi için yerel sunucu (npm start / masaüstü uygulaması) gereklidir.'}
+            </div>
+          </div>
+        )}
 
         <style>{UP_CSS}</style>
 

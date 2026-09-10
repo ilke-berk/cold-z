@@ -41,3 +41,6 @@ output.txt
 debug_pdf.js
 test-new.js
 pdf-to-text-test.js
+
+# Derlenmiş arayüz + yerel kütüphaneler (scripts/build-ui.js üretir)
+web/

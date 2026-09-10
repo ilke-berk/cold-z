@@ -298,3 +298,18 @@ Parser tarafı Faz 1-7 ile olgunlaştıktan sonra yapılan kod incelemesi, sahad
 ### Kalan
 - Kontrol Odası hâlâ React/Babel/xlsx/pdf.js'i CDN'den yükler; internetsiz eczanede açılmaz. Sıradaki iş: kütüphaneleri yerelleştirip JSX'i bir kez derlemek.
 - `.github/workflows/test.yml` yalnızca birim test koşar; `electron-builder` derlemesi hâlâ CI'da denenmiyor.
+
+## 10. Çevrimdışı Arayüz: CDN Bağımlılığı Kaldırıldı (Faz 10 — 10.09.2026)
+
+Kontrol Odası açılmak için dört ayrı CDN'e (unpkg, jsdelivr, Google Fonts) muhtaçtı; biri erişilemezse ekran boş kalıyordu. AI (Gemini) ise yalnızca taranmış PDF/görüntü OCR'ı ve yeni PDF formatlarının şema keşfinde gerekir; Excel/CSV, öğrenilmiş şablonlar, MKT, karar, rapor ve denetim izi yereldir. Artık **arayüz her koşulda açılır, AI bir özelliktir**.
+
+### Yapılanlar
+- **`scripts/build-ui.js`** (`npm run build:ui`): node_modules'tan `web/vendor/` altına React + ReactDOM (production UMD), SheetJS, pdf.js (+worker) ve Space Grotesk / JetBrains Mono fontlarını (latin + latin-ext woff2, OFL) kopyalar; `ui/*.jsx` dosyalarını `@babel/preset-react` ile bir kez `web/ui/*.js`'e derler (inline source map). Sürümler `web/vendor/VERSIONS.json`'da. `--watch` ile geliştirme modu (`npm run dev:ui`).
+- **`web/` git'e girmez**; `prestart` / `preapp` / `prebuild` kancaları derlemeyi otomatik koşar. `app.html` yalnızca yerel dosya yükler; tarayıcıda Babel yok, React development yerine production derlemesi (~10× küçük).
+- Derlenmemiş kurulumda sonsuz spinner yerine "npm run build:ui çalıştırın" mesajı.
+- **AI erişilemezken** (`/api/health` → `geminiReady:false` veya sunucu yok) Veri Yükleme sayfasında hangi yolların çalışmaya devam ettiğini söyleyen uyarı; uygulama kapanmaz.
+- CI'a `npm run build:ui` adımı: JSX sözdizimi hatası ve eksik kütüphane paketlemeden önce yakalanır.
+- Doğrulama: sayfa açılışında sıfır dış ağ isteği, fontlar yerelden yüklendi, pdf.js worker yerel yol.
+
+### Not
+- Yeni bağımlılıklar: `react`, `react-dom` (prod), `@babel/core`, `@babel/preset-react`, `@fontsource/*` (dev). `npm ci --ignore-scripts` ile kurulur; native derleme gerekmez.
