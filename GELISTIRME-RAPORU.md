@@ -313,3 +313,22 @@ Kontrol Odası açılmak için dört ayrı CDN'e (unpkg, jsdelivr, Google Fonts)
 
 ### Not
 - Yeni bağımlılıklar: `react`, `react-dom` (prod), `@babel/core`, `@babel/preset-react`, `@fontsource/*` (dev). `npm ci --ignore-scripts` ile kurulur; native derleme gerekmez.
+
+## 11. Ayarlar Ekranı Gerçek (Faz 11 — 10.09.2026)
+
+Ayarlar ekranı önceden tamamen sahteydi: kaydet düğmelerinin işleyicisi yok, anahtar alanında uydurma bir anahtar, "BAĞLI" ve "1.247 kayıt doğrulandı" sabit metin. İlk kurulumda uygulama içinden API anahtarı girmenin yolu yoktu. Artık iki ayar kaynağı da gerçekten kaydediliyor.
+
+### Sunucu (.env) — `GET/POST /api/settings`, `POST /api/settings/test`
+- Okuma: anahtar var mı + maskeli son 4 hane (düz metin asla dönmez), model, bilinen model/fiyat tablosu, fiyat/kur override durumu, paralellik, `.env` yolu.
+- Yazma: `upsertEnv` mevcut `.env`'yi satır satır günceller (yorumlar ve diğer anahtarlar korunur; boş/null değer satırı siler = varsayılana dön). Doğrulama: anahtar biçimi, model adı, sayısal aralıklar. Yazınca `process.env` güncellenir, `refreshRuntimeConfig()` + `initGemini()` yeniden koşar → **sunucu yeniden başlatılmadan devreye girer**. Her değişiklik denetim zincirine yazılır (anahtar maskeli).
+- Bağlantı testi: kaydetmeden önce verilen anahtar/modelle 4 token'lık "ping"; hata metinleri Türkçeleştirildi (geçersiz anahtar / model yok / ağ).
+- Güvenlik: yazma yalnızca loopback adresinden; CORS joker başlığı kaldırıldı (arayüz artık file:// ile değil aynı kökenden yükleniyor); sunucu `127.0.0.1`'e bağlanır (`HOST` ile değiştirilebilir).
+
+### Yerel analiz varsayılanları — `ui/cc-settings.js` (localStorage)
+- Saklama aralığı, alt/üst limit, TOR bütçesi, azami kayıt aralığı, ΔH. Veri Yükleme sayfası açılışta bunları alır; `engineConfig()` motor konfigürasyonuna iner (`activationEnergy` J/mol, `maxIntervalMinutes`).
+- Motor: `normalizeOptions.maxIntervalMinutes` (varsayılan 60) → `isFrequencyIssue`; karar motoru REVİZE eşiğini buradan okur (eskiden sabit 60).
+
+### Kaldırılanlar
+E-posta/push bildirimi, otomatik Excel, demo gizleme, KVKK saklama süresi, "Görüntü/OCR" ve "Anti-Fraud" anahtarları: hiçbirinin karşılığı yoktu. Etkisi olmayan ayar yanlış güven verir; ihtiyaç olduğunda gerçek uygulamasıyla geri gelir.
+
+Testler: `tests/settings.test.js` (upsertEnv birleştirme, CCSettings sanitize/engineConfig, karar motoru azami aralık) — **311/311**. Uçtan uca: kur yaz → oku → geri al, `.env` byte-byte eski hâline döndü; geçersiz anahtar/model reddedildi; bağlantı testi 805 ms; yerel TOR ayarı Veri Yükleme'ye taşındı.

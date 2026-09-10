@@ -98,9 +98,10 @@ const DecisionEngine = {
         if (validation) {
             const maxGap = validation.gaps.length > 0 ? Math.max(...validation.gaps.map(g => g.minutes)) : 0;
 
-            if (validation.mostCommonGapMin > 60) {
+            const maxInterval = Number.isFinite(Number(cfg.maxIntervalMinutes)) && Number(cfg.maxIntervalMinutes) > 0 ? Number(cfg.maxIntervalMinutes) : 60;
+            if (validation.mostCommonGapMin > maxInterval) {
                 escalate('revize');
-                reasons.push(`⚠️ REVİZE: Veriler arasında kayıt aralığı ${Utils.formatDuration(validation.mostCommonGapMin)}. 1 saati aşan kayıt aralıkları nedeniyle eczaneden düzgün rapor talebinde bulunulması gerekmektedir.`);
+                reasons.push(`⚠️ REVİZE: Veriler arasında kayıt aralığı ${Utils.formatDuration(validation.mostCommonGapMin)}. ${Utils.formatDuration(maxInterval)} sınırını aşan kayıt aralıkları nedeniyle eczaneden düzgün rapor talebinde bulunulması gerekmektedir.`);
                 confidence -= 40;
             } else if (maxGap > 300) { // 5 saat limit
                 escalate('revize');

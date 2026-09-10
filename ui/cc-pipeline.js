@@ -310,6 +310,9 @@ window.CCPipeline = (function () {
 
     // 4) MKT + karar
     const cfg2 = { lowerLimit: Number(cfg.lowerLimit) || 2, upperLimit: Number(cfg.upperLimit) || 8, torLimit: Number(cfg.torLimit) || 120 };
+    // Ayarlar ekranından gelen motor parametreleri (varsa): azami kayıt aralığı, ΔH
+    if (isFinite(Number(cfg.maxIntervalMinutes)) && Number(cfg.maxIntervalMinutes) > 0) cfg2.maxIntervalMinutes = Number(cfg.maxIntervalMinutes);
+    if (isFinite(Number(cfg.activationEnergy)) && Number(cfg.activationEnergy) > 0) cfg2.activationEnergy = Number(cfg.activationEnergy);
     const rawValidation = parsed.length === 1 ? (parsed[0].metadata && parsed[0].metadata.validation) : null;
     const analysis = MKTEngine.fullAnalysis(allData, cfg2, rawValidation);
     onStep({ ic: 'check', t: 'VALIDATE', tx: 'Doğrulama — zaman serisi bütünlüğü onaylandı', st: 'ok' });

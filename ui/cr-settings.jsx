@@ -1,33 +1,32 @@
-/* Ayarlar sayfası gövdesi (Kontrol Odası dili) */
+/* Ayarlar sayfası (Kontrol Odası dili)
+ *
+ * İki ayar kaynağı vardır ve ikisi de GERÇEKTEN kaydedilir:
+ *   • Sunucu (.env, GET/POST /api/settings): Gemini API anahtarı, model, fiyat/kur,
+ *     paralellik. Anahtar sunucuya yazılır, tarayıcıda tutulmaz; geri okunurken
+ *     yalnızca maskeli son 4 hane gelir. Kaydedince sunucu yeniden başlatılmadan
+ *     devreye girer (initGemini yeniden koşar).
+ *   • Yerel analiz varsayılanları (CCSettings → localStorage): saklama aralığı,
+ *     limitler, TOR bütçesi, azami kayıt aralığı, ΔH. Veri Yükleme sayfası ve
+ *     karar motoru bunları kullanır.
+ * Karşılığı olmayan (e-posta, push, otomatik Excel, saklama süresi) anahtarlar
+ * kaldırıldı: etkisi olmayan bir ayar, yanlış güven verir.
+ */
 (function () {
   const { useState, useEffect } = React;
   const { CCIcons: Ic, CRShell } = window;
 
-  // Denetim zinciri durumu — sunucudan canlı (GET /api/audit/verify); sahte sabit metin değil.
+  // Denetim zinciri durumu — sunucudan canlı (GET /api/audit/verify)
   function ChainStatus({ chain }) {
     if (chain === undefined) return <div className="set-status" style={{ color: 'var(--t3)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--t3)' }} />Doğrulanıyor…</div>;
     if (!chain || !chain.success) return <div className="set-status" style={{ color: 'var(--amber)', background: 'var(--amberS)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--amber)' }} />Doğrulanamadı — sunucu çevrimdışı olabilir</div>;
     if (chain.ok) return <div className="set-status" style={{ color: 'var(--ok)', background: 'var(--okS)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--ok)' }} />Sağlam — {chain.total} kayıt SHA-256 ile doğrulandı</div>;
     return <div className="set-status" style={{ color: 'var(--bad)', background: 'var(--badS)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--bad)' }} />ZİNCİR BOZUK — {chain.broken.length}/{chain.total} kayıtta uyumsuzluk</div>;
   }
-  const getDocDate = () => {
-    const d = new Date();
-    const pad = n => String(n).padStart(2, '0');
-    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
 
   const SET_CSS = `
   .set-g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;align-items:start;}
   .set-bd{padding:18px;display:grid;gap:14px;}
-  .set-sw{position:relative;width:42px;height:24px;border-radius:13px;background:var(--ln2);cursor:pointer;transition:.16s;flex-shrink:0;}
-  .set-sw.on{background:var(--sig);}
-  .set-sw::after{content:'';position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.16s;box-shadow:0 1px 3px rgba(0,0,0,.35);}
-  .set-sw.on::after{transform:translateX(18px);}
-  .set-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0;border-top:1px solid var(--ln);}
-  .set-row:first-child{border-top:none;padding-top:0;}
-  .set-rl{font-size:12.5px;font-weight:600;}
-  .set-rs{font-size:11px;color:var(--t3);margin-top:3px;line-height:1.45;max-width:340px;}
-  .set-seg{display:flex;gap:3px;background:var(--pn2);border:1px solid var(--ln2);border-radius:8px;padding:3px;}
+  .set-seg{display:flex;gap:3px;background:var(--pn2);border:1px solid var(--ln2);border-radius:8px;padding:3px;flex-wrap:wrap;}
   .set-seg button{border:none;cursor:pointer;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;padding:6px 12px;border-radius:6px;background:transparent;color:var(--t2);transition:.12s;white-space:nowrap;}
   .set-seg button.on{background:var(--sig);color:#04121a;}
   .set-key{display:flex;gap:8px;}
@@ -37,40 +36,64 @@
   .set-status i{width:7px;height:7px;border-radius:50%;}
   .set-note{font-size:11px;color:var(--t3);line-height:1.5;padding-top:4px;border-top:1px solid var(--ln);}
   .set-foot{display:flex;align-items:center;gap:12px;position:sticky;bottom:0;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(8px);padding:14px 0 4px;margin-top:4px;border-top:1px solid var(--ln2);}
+  .set-msg{font-size:12px;padding:10px 14px;border-radius:8px;border:1px solid var(--ln2);display:flex;gap:8px;align-items:center;}
+  .set-msg.ok{color:var(--ok);border-color:var(--ok);background:var(--okS);}
+  .set-msg.bad{color:var(--bad);border-color:var(--bad);background:var(--badS);}
+  .set-msg.info{color:var(--t2);}
+  .set-dirty{font-size:10px;letter-spacing:.6px;text-transform:uppercase;font-weight:700;color:var(--amber);border:1px solid var(--amber);border-radius:5px;padding:2px 7px;}
   `;
 
-  function Switch({ on, set }) { return <div className={'set-sw' + (on ? ' on' : '')} onClick={() => set(!on)} />; }
-  function Row({ label, sub, children }) {
-    return <div className="set-row"><div style={{ minWidth: 0 }}><div className="set-rl">{label}</div>{sub && <div className="set-rs">{sub}</div>}</div>{children}</div>;
-  }
-  function Field({ label, children }) { return <div className="cr-field"><label className="cr-label">{label}</label>{children}</div>; }
+  function Field({ label, children, hint }) { return <div className="cr-field"><label className="cr-label">{label}</label>{children}{hint && <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 4 }}>{hint}</div>}</div>; }
 
-  const RANGES = {
-    cold: 'Soğuk Zincir Standart · 2–8°C',
-    frozen: 'Dondurulmuş · −25…−15°C',
-    room: 'Kontrollü Oda · 15–25°C',
-    deep: 'Derin Dondurucu · ≤ −60°C',
-    custom: 'Özel Aralık',
-  };
-  const MODELS = [['flash15', 'gemini-1.5-flash'], ['flash25', 'gemini-2.5-flash'], ['pro25', 'gemini-2.5-pro']];
+  const MODEL_CHOICES = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
   function CRSettings({ theme, onNav = () => {} }) {
-    const DOC_DATE = getDocDate();
-    const [range, setRange] = useState('cold');
-    const [lo, setLo] = useState(2);
-    const [hi, setHi] = useState(8);
-    const [tor, setTor] = useState(120);
-    const [gap, setGap] = useState(60);
-    const [dH, setDH] = useState(83.144);
-    const [model, setModel] = useState('flash25');
+    const S = window.CCSettings;
+    const RANGES = (S && S.RANGES) || {};
+
+    // --- yerel analiz ayarları
+    const [local, setLocal] = useState(() => (S ? S.get() : {}));
+    const [localSaved, setLocalSaved] = useState(() => JSON.stringify(S ? S.get() : {}));
+    const localDirty = JSON.stringify(local) !== localSaved;
+    const setL = (k, v) => setLocal(o => ({ ...o, [k]: v }));
+    const onRange = v => { const r = RANGES[v]; setLocal(o => ({ ...o, range: v, lo: r ? r.min : o.lo, hi: r ? r.max : o.hi })); };
+
+    // --- sunucu ayarları (.env)
+    const [srv, setSrv] = useState(undefined);       // undefined=yükleniyor | null=ulaşılamadı | {settings}
+    const [model, setModel] = useState('');
+    const [apiKey, setApiKey] = useState('');         // yalnızca kullanıcı yeni anahtar yazarsa dolar
     const [showKey, setShowKey] = useState(false);
-    const [rate, setRate] = useState(39);
-    const [pin, setPin] = useState(0.30);
-    const [pout, setPout] = useState(2.50);
-    const [budget, setBudget] = useState(500);
-    const [sw, setSw] = useState({ mailReject: true, push: false, autoExcel: true, hideDemo: false, vision: true, antifraud: true });
-    const [retention, setRetention] = useState('5y');
-    const tw = (k) => setSw(s => ({ ...s, [k]: !s[k] }));
+    const [usdTry, setUsdTry] = useState('');
+    const [priceIn, setPriceIn] = useState('');
+    const [priceOut, setPriceOut] = useState('');
+    const [conc, setConc] = useState(2);
+    const [msg, setMsg] = useState(null);             // {tone, text}
+    const [busy, setBusy] = useState(false);
+    const [testing, setTesting] = useState(false);
+
+    const applyServer = (st) => {
+      setSrv(st);
+      setModel(st.model || '');
+      setUsdTry(String(st.usdTry ?? ''));
+      setPriceIn(st.priceInOverride ? String(st.priceIn) : '');
+      setPriceOut(st.priceOutOverride ? String(st.priceOut) : '');
+      setConc(st.extractConcurrency || 2);
+      setApiKey('');
+    };
+    const loadServer = async () => {
+      try { const r = await fetch('/api/settings'); const j = await r.json(); if (j.success) applyServer(j.settings); else setSrv(null); }
+      catch (e) { setSrv(null); }
+    };
+    useEffect(() => { loadServer(); }, []);
+
+    const serverDirty = !!srv && (
+      apiKey.trim() !== '' || model !== srv.model || conc !== srv.extractConcurrency ||
+      String(usdTry) !== String(srv.usdTry) ||
+      priceIn !== (srv.priceInOverride ? String(srv.priceIn) : '') ||
+      priceOut !== (srv.priceOutOverride ? String(srv.priceOut) : '')
+    );
+
+    // --- denetim zinciri
     const [chain, setChain] = useState(undefined);
     const verifyChain = async () => {
       setChain(undefined);
@@ -79,57 +102,107 @@
     };
     useEffect(() => { verifyChain(); }, []);
 
+    // --- kaydet / sıfırla / test
+    const saveAll = async () => {
+      setBusy(true); setMsg(null);
+      const done = [];
+      try {
+        if (localDirty && S) { const o = S.save(local); setLocal(o); setLocalSaved(JSON.stringify(o)); done.push('analiz varsayılanları'); }
+        if (serverDirty) {
+          const body = {};
+          if (apiKey.trim() !== '') body.apiKey = apiKey.trim();
+          if (model !== srv.model) body.model = model;
+          if (String(usdTry) !== String(srv.usdTry)) body.usdTry = usdTry === '' ? null : Number(usdTry);
+          if (priceIn !== (srv.priceInOverride ? String(srv.priceIn) : '')) body.priceIn = priceIn === '' ? null : Number(priceIn);
+          if (priceOut !== (srv.priceOutOverride ? String(srv.priceOut) : '')) body.priceOut = priceOut === '' ? null : Number(priceOut);
+          if (conc !== srv.extractConcurrency) body.extractConcurrency = conc;
+          const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          const j = await r.json();
+          if (!j.success) throw new Error(j.error || 'Sunucu ayarları kaydedilemedi.');
+          applyServer(j.settings);
+          done.push('.env (' + (j.changed || []).length + ' alan)');
+          if (body.apiKey && !j.geminiReady) setMsg({ tone: 'bad', text: 'Anahtar kaydedildi ama Gemini başlatılamadı; "Bağlantıyı test et" ile kontrol edin.' });
+        }
+        if (!done.length) setMsg({ tone: 'info', text: 'Değişiklik yok.' });
+        else if (!msg) setMsg({ tone: 'ok', text: 'Kaydedildi: ' + done.join(' · ') + (done.some(d => d.startsWith('.env')) ? ' — sunucu yeniden başlatılmadan devrede.' : '') });
+      } catch (e) { setMsg({ tone: 'bad', text: e.message }); }
+      setBusy(false);
+    };
+    const resetLocal = () => { if (!S) return; const o = S.reset(); setLocal(o); setLocalSaved(JSON.stringify(o)); setMsg({ tone: 'info', text: 'Analiz varsayılanları sıfırlandı (2–8°C, TOR 120 dk, 60 dk aralık, ΔH 83,144).' }); };
+    const testConn = async () => {
+      setTesting(true); setMsg(null);
+      try {
+        const body = {}; if (apiKey.trim()) body.apiKey = apiKey.trim(); if (model) body.model = model;
+        const r = await fetch('/api/settings/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const j = await r.json();
+        setMsg(j.success ? { tone: 'ok', text: `Bağlantı başarılı — ${j.model}, ${j.latencyMs} ms${apiKey.trim() ? ' (anahtar henüz kaydedilmedi; Kaydet ile yazın)' : ''}.` } : { tone: 'bad', text: 'Bağlantı başarısız: ' + j.error });
+      } catch (e) { setMsg({ tone: 'bad', text: 'Sunucuya ulaşılamadı: ' + e.message }); }
+      setTesting(false);
+    };
+
+    const dirty = localDirty || serverDirty;
+    const aiStatus = srv === undefined ? ['var(--t3)', 'SORGULANIYOR'] : srv === null ? ['var(--bad)', 'SUNUCU YOK'] : !srv.hasKey ? ['var(--amber)', 'ANAHTAR YOK'] : srv.geminiReady ? ['var(--ok)', 'BAĞLI'] : ['var(--bad)', 'BAŞLATILAMADI'];
+    const pricingFor = srv && srv.modelPricing && srv.modelPricing[model];
+    const modelList = MODEL_CHOICES.includes(model) || !model ? MODEL_CHOICES : [model, ...MODEL_CHOICES];
+
     return (
       <CRShell theme={theme} active="settings" onNav={onNav}>
         <style>{SET_CSS}</style>
         <div className="cr-hr">
-          <div><div className="cr-h1">Ayarlar</div><div className="cr-h1sub">Sıcaklık eşikleri, yapay zeka modeli, fiyatlandırma ve güvenlik tercihleri</div></div>
+          <div><div className="cr-h1">Ayarlar {dirty && <span className="set-dirty" style={{ marginLeft: 8, verticalAlign: 'middle' }}>kaydedilmedi</span>}</div><div className="cr-h1sub">Analiz varsayılanları (bu bilgisayar) · Yapay zeka ve fiyat ayarları (.env)</div></div>
           <div style={{ display: 'flex', gap: 12 }}>
-            <button className="cr-btn cr-btn2"><Ic.refresh size={15} /> Varsayılana dön</button>
-            <button className="cr-btn"><Ic.save size={15} /> Değişiklikleri kaydet</button>
+            <button className="cr-btn cr-btn2" onClick={resetLocal} disabled={busy}><Ic.refresh size={15} /> Varsayılana dön</button>
+            <button className="cr-btn" onClick={saveAll} disabled={busy || !dirty}><Ic.save size={15} /> {busy ? 'Kaydediliyor…' : 'Değişiklikleri kaydet'}</button>
           </div>
         </div>
 
+        {msg && <div className={'set-msg ' + msg.tone} style={{ marginBottom: 14 }}>{msg.tone === 'ok' ? <Ic.check size={14} /> : msg.tone === 'bad' ? <Ic.alert size={14} /> : <Ic.clock size={14} />}{msg.text}</div>}
+
         <div className="set-g2">
-          {/* Sıcaklık eşikleri */}
+          {/* Analiz varsayılanları */}
           <div className="cr-pn">
-            <div className="cr-ph"><div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> SICAKLIK & EŞİK DEĞERLERİ</div></div>
+            <div className="cr-ph"><div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> ANALİZ VARSAYILANLARI</div>{localDirty && <span className="set-dirty">değişti</span>}</div>
             <div className="set-bd">
               <Field label="Varsayılan Saklama Koşulu">
-                <select className="cr-select" value={range} onChange={e => setRange(e.target.value)}>
-                  {Object.entries(RANGES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                <select className="cr-select" value={local.range} onChange={e => onRange(e.target.value)}>
+                  {Object.entries(RANGES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                 </select>
               </Field>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <Field label="Alt Limit °C"><input className="cr-input" type="number" value={lo} onChange={e => setLo(e.target.value)} /></Field>
-                <Field label="Üst Limit °C"><input className="cr-input" type="number" value={hi} onChange={e => setHi(e.target.value)} /></Field>
+                <Field label="Alt Limit °C"><input className="cr-input" type="number" value={local.lo} onChange={e => setLocal(o => ({ ...o, lo: e.target.value, range: 'custom' }))} /></Field>
+                <Field label="Üst Limit °C"><input className="cr-input" type="number" value={local.hi} onChange={e => setLocal(o => ({ ...o, hi: e.target.value, range: 'custom' }))} /></Field>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <Field label="TOR Limiti (dakika)"><input className="cr-input" type="number" value={tor} onChange={e => setTor(e.target.value)} /></Field>
-                <Field label="Maks. Kayıt Aralığı (dk)"><input className="cr-input" type="number" value={gap} onChange={e => setGap(e.target.value)} /></Field>
+                <Field label="TOR Bütçesi (dakika)" hint="Üst limit üstü toplam süre bunu aşarsa karar ŞARTLI"><input className="cr-input" type="number" value={local.tor} onChange={e => setL('tor', e.target.value)} /></Field>
+                <Field label="Azami Kayıt Aralığı (dk)" hint="Logger bundan seyrek kaydetmişse REVİZE"><input className="cr-input" type="number" value={local.maxInterval} onChange={e => setL('maxInterval', e.target.value)} /></Field>
               </div>
-              <Field label="Aktivasyon Enerjisi ΔH (kJ/mol) — MKT"><input className="cr-input" type="number" step="0.001" value={dH} onChange={e => setDH(e.target.value)} /></Field>
-              <div className="set-note">MKT hesabı bu ΔH katsayısını kullanır. ICH Q1A standardı için <b style={{ color: 'var(--sig)' }}>83,144 kJ/mol</b> önerilir.</div>
+              <Field label="Aktivasyon Enerjisi ΔH (kJ/mol) — MKT"><input className="cr-input" type="number" step="0.001" value={local.dH} onChange={e => setL('dH', e.target.value)} /></Field>
+              <div className="set-note">Bu değerler Veri Yükleme sayfasının açılış varsayılanıdır ve karar motoruna iner; sayfada dosya bazında değiştirilebilir. ICH Q1A / WHO için ΔH <b style={{ color: 'var(--sig)' }}>83,144 kJ/mol</b>. Bu bilgisayarda saklanır (tarayıcı deposu).</div>
             </div>
           </div>
 
-          {/* Yapay zeka modeli */}
+          {/* Yapay zeka */}
           <div className="cr-pn">
-            <div className="cr-ph"><div className="cr-pt"><Ic.cpu size={15} style={{ color: 'var(--sig)' }} /> YAPAY ZEKA MODELİ (.env)</div>
-              <span className="set-status" style={{ color: 'var(--ok)', background: 'var(--okS)' }}><i style={{ background: 'var(--ok)' }} />BAĞLI</span></div>
+            <div className="cr-ph"><div className="cr-pt"><Ic.cpu size={15} style={{ color: 'var(--sig)' }} /> YAPAY ZEKA (GEMINI · .env)</div>
+              <span className="set-status" style={{ color: aiStatus[0], background: 'transparent', border: '1px solid ' + aiStatus[0] }}><i style={{ background: aiStatus[0] }} />{aiStatus[1]}</span></div>
             <div className="set-bd">
-              <Field label="Çözümleme Modeli">
-                <div className="set-seg">{MODELS.map(([k, l]) => <button key={k} className={k === model ? 'on' : ''} onClick={() => setModel(k)}>{l.replace('gemini-', '')}</button>)}</div>
+              {srv === null && <div className="set-msg bad"><Ic.alert size={14} /> Sunucuya ulaşılamıyor; .env ayarları okunamadı.</div>}
+              <Field label="Çözümleme Modeli" hint={pricingFor ? `Liste fiyatı: $${pricingFor.input} girdi / $${pricingFor.output} çıktı (1M token)` : (model ? 'Bu model fiyat tablosunda yok; fiyatı aşağıda elle girin.' : '')}>
+                <div className="set-seg">{modelList.map(m => <button key={m} className={m === model ? 'on' : ''} onClick={() => setModel(m)} disabled={!srv}>{m.replace('gemini-', '')}</button>)}</div>
               </Field>
-              <Field label="GEMINI_API_KEY">
+              <Field label="GEMINI_API_KEY" hint={srv && srv.hasKey ? `Kayıtlı anahtar: ${srv.keyMasked} — değiştirmek için yenisini yazın` : 'Anahtar almak için: aistudio.google.com/apikey'}>
                 <div className="set-key">
-                  <input className="cr-input" type={showKey ? 'text' : 'password'} defaultValue="AIzaSyD-9tQ4mvK7n2bX1pR8w" />
+                  <input className="cr-input" type={showKey ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={srv && srv.hasKey ? srv.keyMasked : 'AIza…'} autoComplete="off" spellCheck={false} disabled={!srv} />
                   <div className="set-iconbtn" onClick={() => setShowKey(v => !v)} title={showKey ? 'Gizle' : 'Göster'}><Ic.eye size={16} /></div>
                 </div>
               </Field>
-              <Row label="Görüntü / OCR taraması" sub="PDF ve fotoğraf loggerlarını Smart Hybrid ile otomatik çöz."><Switch on={sw.vision} set={() => tw('vision')} /></Row>
-              <Row label="Anti-Fraud denetimi" sub="Yüklenen veride manipülasyon (Excel/PDF düzenleme) tespiti."><Switch on={sw.antifraud} set={() => tw('antifraud')} /></Row>
-              <div className="set-note">API anahtarı yalnızca yerel <b className="cr-m" style={{ color: 'var(--t2)' }}>userData/.env</b> dosyasında saklanır, installer'a paketlenmez.</div>
+              <Field label="OCR Paralelliği (parça / aynı anda)" hint="Büyük taranmış PDF'lerde hız; 4 üstü oran sınırına takılır">
+                <div className="set-seg">{[1, 2, 3, 4].map(n => <button key={n} className={n === conc ? 'on' : ''} onClick={() => setConc(n)} disabled={!srv}>{n}</button>)}</div>
+              </Field>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="cr-btn cr-btn2" onClick={testConn} disabled={testing || !srv} style={{ flex: 1, justifyContent: 'center' }}><Ic.activity size={14} /> {testing ? 'Deneniyor…' : 'Bağlantıyı test et'}</button>
+              </div>
+              <div className="set-note">Anahtar yalnızca sunucudaki <b className="cr-m" style={{ color: 'var(--t2)' }}>{srv && srv.envPath ? srv.envPath : '.env'}</b> dosyasına yazılır; tarayıcıda saklanmaz, kurulum paketine girmez, geri okunurken yalnızca son 4 hanesi görünür.</div>
             </div>
           </div>
         </div>
@@ -137,59 +210,36 @@
         <div className="set-g2">
           {/* Fiyat & kur */}
           <div className="cr-pn">
-            <div className="cr-ph"><div className="cr-pt"><Ic.dollar size={15} style={{ color: 'var(--sig)' }} /> FİYAT & KUR</div></div>
+            <div className="cr-ph"><div className="cr-pt"><Ic.dollar size={15} style={{ color: 'var(--sig)' }} /> FİYAT & KUR (.env)</div></div>
             <div className="set-bd">
-              <Field label="USD / TRY Kuru"><input className="cr-input" type="number" step="0.01" value={rate} onChange={e => setRate(e.target.value)} /></Field>
+              <Field label="USD / TRY Kuru"><input className="cr-input" type="number" step="0.01" value={usdTry} onChange={e => setUsdTry(e.target.value)} disabled={!srv} /></Field>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <Field label="Girdi ($ / 1M token)"><input className="cr-input" type="number" step="0.01" value={pin} onChange={e => setPin(e.target.value)} /></Field>
-                <Field label="Çıktı ($ / 1M token)"><input className="cr-input" type="number" step="0.01" value={pout} onChange={e => setPout(e.target.value)} /></Field>
+                <Field label="Girdi ($ / 1M token)"><input className="cr-input" type="number" step="0.001" value={priceIn} onChange={e => setPriceIn(e.target.value)} placeholder={srv ? 'model tablosu: ' + srv.priceIn : ''} disabled={!srv} /></Field>
+                <Field label="Çıktı ($ / 1M token)"><input className="cr-input" type="number" step="0.001" value={priceOut} onChange={e => setPriceOut(e.target.value)} placeholder={srv ? 'model tablosu: ' + srv.priceOut : ''} disabled={!srv} /></Field>
               </div>
-              <Field label="Aylık Bütçe Uyarı Eşiği (₺)"><input className="cr-input" type="number" value={budget} onChange={e => setBudget(e.target.value)} /></Field>
-              <div className="set-note">Bu değerler <b className="cr-m" style={{ color: 'var(--t2)' }}>.env</b> fiyat tablosunu geçersiz kılar. Boş bırakılırsa model bazlı varsayılan tablo kullanılır.</div>
+              <div className="set-note">Boş bırakılan fiyat alanı seçili modelin liste fiyatını kullanır; dolu alan onu geçersiz kılar. Her OCR yanıtındaki maliyet bu değerlerle hesaplanır.</div>
             </div>
           </div>
 
-          {/* Bildirim & otomasyon */}
+          {/* Güvenlik */}
           <div className="cr-pn">
-            <div className="cr-ph"><div className="cr-pt"><Ic.bell size={15} style={{ color: 'var(--sig)' }} /> BİLDİRİM & OTOMASYON</div></div>
+            <div className="cr-ph"><div className="cr-pt"><Ic.lock size={15} style={{ color: 'var(--sig)' }} /> VERİ BÜTÜNLÜĞÜ & GÜVENLİK</div></div>
             <div className="set-bd">
-              <Row label="RED kararında e-posta" sub="İade reddi verildiğinde QA ekibine otomatik uyarı gönder."><Switch on={sw.mailReject} set={() => tw('mailReject')} /></Row>
-              <Row label="Masaüstü push bildirimi" sub="Sapma ve MKT ihlallerinde anlık bildirim."><Switch on={sw.push} set={() => tw('push')} /></Row>
-              <Row label="Otomatik Excel dışa aktarım" sub="Her analiz sonrası raporu otomatik kaydet."><Switch on={sw.autoExcel} set={() => tw('autoExcel')} /></Row>
-              <Row label="Demo butonunu üretimde gizle" sub="Prod build'de sentetik veri butonu görünmesin."><Switch on={sw.hideDemo} set={() => tw('hideDemo')} /></Row>
-            </div>
-          </div>
-        </div>
-
-        {/* Güvenlik */}
-        <div className="cr-pn" style={{ marginBottom: 16 }}>
-          <div className="cr-ph"><div className="cr-pt"><Ic.lock size={15} style={{ color: 'var(--sig)' }} /> VERİ BÜTÜNLÜĞÜ & GÜVENLİK</div></div>
-          <div className="set-bd" style={{ gridTemplateColumns: '1fr 1fr', display: 'grid', gap: 18 }}>
-            <div>
-              <Field label="Denetim Zinciri Durumu">
-                <ChainStatus chain={chain} />
-              </Field>
-              <div style={{ height: 12 }} />
+              <Field label="Denetim Zinciri Durumu"><ChainStatus chain={chain} /></Field>
               <Field label="Hash Algoritması"><input className="cr-input" value="SHA-256 (hash chain)" readOnly style={{ color: 'var(--t3)' }} /></Field>
-            </div>
-            <div>
-              <Field label="KVKK Veri Saklama Süresi">
-                <select className="cr-select" value={retention} onChange={e => setRetention(e.target.value)}>
-                  {[['1y', '1 yıl'], ['2y', '2 yıl'], ['5y', '5 yıl (TİTCK önerisi)'], ['10y', '10 yıl']].map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-                </select>
-              </Field>
-              <div style={{ height: 12 }} />
-              <button className="cr-btn cr-btn2" style={{ width: '100%', justifyContent: 'center' }} onClick={verifyChain}><Ic.shield size={15} /> Denetim zincirini şimdi doğrula</button>
-              <div style={{ height: 8 }} />
-              <button className="cr-btn cr-btn2" style={{ width: '100%', justifyContent: 'center' }} onClick={() => onNav('audit')}><Ic.report size={15} /> Denetim izini aç</button>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <button className="cr-btn cr-btn2" style={{ justifyContent: 'center' }} onClick={verifyChain}><Ic.shield size={15} /> Zinciri doğrula</button>
+                <button className="cr-btn cr-btn2" style={{ justifyContent: 'center' }} onClick={() => onNav('audit')}><Ic.report size={15} /> Denetim izini aç</button>
+              </div>
+              <div className="set-note">Sunucu yalnızca bu bilgisayardan (127.0.0.1) erişilebilir; ayar yazma uzak adreslerden reddedilir. Her ayar değişikliği denetim zincirine yazılır (anahtar maskeli).</div>
             </div>
           </div>
         </div>
 
         <div className="set-foot">
-          <button className="cr-btn"><Ic.save size={15} /> Değişiklikleri kaydet</button>
+          <button className="cr-btn" onClick={saveAll} disabled={busy || !dirty}><Ic.save size={15} /> {busy ? 'Kaydediliyor…' : 'Değişiklikleri kaydet'}</button>
           <button className="cr-btn cr-btn2" onClick={() => onNav('dashboard')}><Ic.chevL size={15} /> Kontrol Paneli</button>
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--t3)', fontFamily: "'JetBrains Mono', monospace" }}>ColdChain AI · v2.1 · son kayıt {DOC_DATE}</span>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--t3)', fontFamily: "'JetBrains Mono', monospace" }}>ColdChain AI · {srv && srv.port ? 'port ' + srv.port + ' · ' : ''}{srv && srv.model ? srv.model : ''}</span>
         </div>
       </CRShell>
     );

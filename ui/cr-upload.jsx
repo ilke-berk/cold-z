@@ -155,8 +155,10 @@
     const fileRef = useRef(null);
     const [files, setFiles] = useState([]);     // {id, file, name, kind, size, ai, prog, status, done, error}
     const [drag, setDrag] = useState(false);
-    const [range, setRange] = useState('cold');
-    const [limits, setLimits] = useState({ lo: 2, hi: 8, tor: 120 });
+    // Varsayılanlar Ayarlar ekranından (CCSettings, localStorage); sayfada değiştirilebilir
+    const initialSettings = (window.CCSettings && CCSettings.get()) || { range: 'cold', lo: 2, hi: 8, tor: 120 };
+    const [range, setRange] = useState(initialSettings.range);
+    const [limits, setLimits] = useState({ lo: initialSettings.lo, hi: initialSettings.hi, tor: initialSettings.tor });
     const [form, setForm] = useState({ pharmacy: '', batch: '', drug: '', serial: '', purchaseDate: '', returnDate: '', reason: REASONS[0], barcode: '', qty: '', expiry: '', amount: '' });
     const [acOpen, setAcOpen] = useState(false);
     const [pipe, setPipe] = useState([]);
@@ -481,7 +483,8 @@
       setFiles(f => f.map(x => ({ ...x, prog: 0, status: x.ai ? 'Smart bekliyor' : 'Hazır', done: false, error: false })));
 
       const effectiveApprovals = approvalsOverride || approvals;
-      const cfg = { lowerLimit: limits.lo, upperLimit: limits.hi, torLimit: limits.tor };
+      const eng = (window.CCSettings && CCSettings.engineConfig()) || {};
+      const cfg = { lowerLimit: limits.lo, upperLimit: limits.hi, torLimit: limits.tor, maxIntervalMinutes: eng.maxIntervalMinutes, activationEnergy: eng.activationEnergy };
       try {
         const out = await CCPipeline.run(
           files.map(f => {
@@ -597,6 +600,7 @@
               {ai.serverReady
                 ? 'API anahtarı tanımlı değil veya Gemini erişilemiyor. Excel/CSV dosyaları ve daha önce öğrenilmiş PDF şablonları AI olmadan çözülmeye devam eder; taranmış PDF / fotoğraf ve yeni PDF formatları bekletilir.'
                 : 'Analiz, kayıt ve denetim izi için yerel sunucu (npm start / masaüstü uygulaması) gereklidir.'}
+              {ai.serverReady && <> <a href="#" onClick={e => { e.preventDefault(); onNav('settings'); }} style={{ color: 'var(--sig)', fontWeight: 600 }}>Ayarlar'da API anahtarı gir →</a></>}
             </div>
           </div>
         )}

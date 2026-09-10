@@ -85,20 +85,15 @@ app.use(express.static(path.join(__dirname), {
 }));
 app.use(express.json({ limit: '20mb' }));
 
-// ─── BÖLÜM: CORS Eklemesi (Electron file:// protokolü için)
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    }
-    next();
-});
+// ─── Köken kısıtı ────────────────────────────────────────────
+// Arayüz (Electron dahil) her zaman bu sunucudan http://localhost:PORT ile
+// yüklenir; file:// için gereken CORS joker başlığı (Faz 9 öncesi) kaldırıldı.
+// Tarayıcı aynı-köken kuralıyla başka sitelerin /api'ye erişimini engeller;
+// ayrıca sunucu yalnızca 127.0.0.1'e bağlanır (HOST ile değiştirilebilir).
 
 // ─── Gemini AI Kurulumu ─────────────────────────────────────
 let genAI = null;
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash'; // .env'den alindigi için buradan değil oradan değiştirin.
+let MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash'; // .env / Ayarlar ekranından değiştirilir
 const PAGES_PER_CHUNK = 3;  // Çok fazla sayfa olunca AI satır atlar (tembellik). Maks 3 sayfa/chunk.
 
 // ─── Fiyatlandırma (override için .env) ─────────────────────
@@ -114,13 +109,46 @@ const MODEL_PRICING = {
     'gemini-2.5-flash-preview': { input: 0.10,  output: 0.40 },
     'gemini-2.5-pro':           { input: 1.25,  output: 10.00 }
 };
-const PRICE_IN  = parseFloat(process.env.PRICE_INPUT_PER_M)  || MODEL_PRICING[MODEL_NAME]?.input  || 0.10;
-const PRICE_OUT = parseFloat(process.env.PRICE_OUTPUT_PER_M) || MODEL_PRICING[MODEL_NAME]?.output || 0.40;
-const USD_TRY   = parseFloat(process.env.USD_TRY_RATE) || 39;
+let PRICE_IN, PRICE_OUT, USD_TRY;
+// Çalışma zamanı ayarlarını process.env'den (yeniden) türet — Ayarlar ekranı
+// .env'yi yazdıktan sonra sunucu yeniden başlatılmadan devreye girer.
+function refreshRuntimeConfig() {
+    MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    PRICE_IN  = parseFloat(process.env.PRICE_INPUT_PER_M)  || MODEL_PRICING[MODEL_NAME]?.input  || 0.10;
+    PRICE_OUT = parseFloat(process.env.PRICE_OUTPUT_PER_M) || MODEL_PRICING[MODEL_NAME]?.output || 0.40;
+    USD_TRY   = parseFloat(process.env.USD_TRY_RATE) || 39;
+}
+refreshRuntimeConfig();
+
+const hasApiKey = () => !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'YOUR_API_KEY_HERE';
+const maskKey = k => (!k || k.length < 8) ? (k ? '••••' : '') : ('•'.repeat(Math.min(12, k.length - 4)) + k.slice(-4));
+
+// .env metnine anahtar/değer çiftlerini ekler-günceller; diğer satırlar ve
+// yorumlar korunur. value === null → satır silinir. Saf fonksiyon (testlenir).
+function upsertEnv(text, updates) {
+    const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    const seen = new Set();
+    const out = [];
+    for (const line of lines) {
+        const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+        const key = m && m[1];
+        if (key && Object.prototype.hasOwnProperty.call(updates, key)) {
+            seen.add(key);
+            if (updates[key] === null) continue;
+            out.push(`${key}=${updates[key]}`);
+        } else out.push(line);
+    }
+    for (const [k, v] of Object.entries(updates)) {
+        if (!seen.has(k) && v !== null) out.push(`${k}=${v}`);
+    }
+    return out.join('\n') + '\n';
+}
 
 function initGemini() {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey === 'YOUR_API_KEY_HERE') {
+        genAI = null;
         console.warn('[UYARI] GEMINI_API_KEY ayarlanmamis!');
         console.warn(`         .env dosyasi su konumda olmalidir: ${envPath}`);
         console.warn('         Icerik: GEMINI_API_KEY=xxxxxxxxxxxx');
@@ -1084,6 +1112,117 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// ─── AYARLAR (.env) ─────────────────────────────────────────
+// Ayarlar ekranı API anahtarını, modeli ve fiyat/kur değerlerini buradan
+// okur/yazar. Anahtar hiçbir zaman düz metin döndürülmez (maskeli son 4 hane).
+// Yazma yalnızca yerel makineden (loopback) kabul edilir.
+const isLoopback = (req) => {
+    const a = String(req.socket && req.socket.remoteAddress || '');
+    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+};
+const SETTINGS_KEYS = { apiKey: 'GEMINI_API_KEY', model: 'GEMINI_MODEL', priceIn: 'PRICE_INPUT_PER_M', priceOut: 'PRICE_OUTPUT_PER_M', usdTry: 'USD_TRY_RATE', extractConcurrency: 'EXTRACT_CONCURRENCY' };
+
+function currentSettings() {
+    return {
+        hasKey: hasApiKey(),
+        keyMasked: hasApiKey() ? maskKey(process.env.GEMINI_API_KEY) : '',
+        geminiReady: !!genAI,
+        model: MODEL_NAME,
+        knownModels: Object.keys(MODEL_PRICING),
+        modelPricing: MODEL_PRICING,
+        priceIn: PRICE_IN,
+        priceOut: PRICE_OUT,
+        priceInOverride: !!parseFloat(process.env.PRICE_INPUT_PER_M),
+        priceOutOverride: !!parseFloat(process.env.PRICE_OUTPUT_PER_M),
+        usdTry: USD_TRY,
+        extractConcurrency: Math.max(1, Math.min(parseInt(process.env.EXTRACT_CONCURRENCY) || 2, 4)),
+        envPath,
+        port: Number(PORT),
+    };
+}
+
+app.get('/api/settings', (req, res) => {
+    res.json({ success: true, settings: currentSettings() });
+});
+
+app.post('/api/settings', (req, res) => {
+    if (!isLoopback(req)) return res.status(403).json({ success: false, error: 'Ayarlar yalnızca yerel makineden değiştirilebilir.' });
+    const b = req.body || {};
+    const updates = {};
+    const errors = [];
+
+    if (b.apiKey !== undefined) {
+        const k = String(b.apiKey).trim();
+        if (k === '') updates[SETTINGS_KEYS.apiKey] = null;             // anahtarı kaldır
+        else if (!/^[A-Za-z0-9_\-]{20,}$/.test(k)) errors.push('API anahtarı geçersiz görünüyor (boşluk/özel karakter içeriyor veya çok kısa).');
+        else updates[SETTINGS_KEYS.apiKey] = k;
+    }
+    if (b.model !== undefined) {
+        const m = String(b.model).trim();
+        if (!/^[a-z0-9.\-]{3,60}$/i.test(m)) errors.push('Model adı geçersiz.');
+        else updates[SETTINGS_KEYS.model] = m;
+    }
+    const num = (field, key, min, max) => {
+        if (b[field] === undefined) return;
+        if (b[field] === null || b[field] === '') { updates[key] = null; return; } // varsayılana dön
+        const v = Number(b[field]);
+        if (!isFinite(v) || v < min || v > max) errors.push(`${field} ${min}–${max} aralığında olmalı.`);
+        else updates[key] = String(v);
+    };
+    num('priceIn', SETTINGS_KEYS.priceIn, 0, 1000);
+    num('priceOut', SETTINGS_KEYS.priceOut, 0, 1000);
+    num('usdTry', SETTINGS_KEYS.usdTry, 0.01, 10000);
+    num('extractConcurrency', SETTINGS_KEYS.extractConcurrency, 1, 4);
+
+    if (errors.length) return res.status(400).json({ success: false, error: errors.join(' ') });
+    if (!Object.keys(updates).length) return res.json({ success: true, changed: [], settings: currentSettings() });
+
+    try {
+        const fs = require('fs');
+        let text = '';
+        try { text = fs.readFileSync(envPath, 'utf8'); } catch (_) { /* ilk kurulum: dosya yok */ }
+        fs.mkdirSync(path.dirname(envPath), { recursive: true });
+        fs.writeFileSync(envPath, upsertEnv(text, updates), { encoding: 'utf8', mode: 0o600 });
+        for (const [k, v] of Object.entries(updates)) {
+            if (v === null) delete process.env[k]; else process.env[k] = v;
+        }
+        refreshRuntimeConfig();
+        const geminiReady = initGemini();
+        const changed = Object.keys(updates);
+        console.log(`[AYAR] .env güncellendi: ${changed.map(k => k === SETTINGS_KEYS.apiKey ? 'GEMINI_API_KEY (maskeli)' : k).join(', ')}`);
+        db.addAuditEntry({ type: 'settings', action: 'Ayarlar güncellendi', details: changed.map(k => k === SETTINGS_KEYS.apiKey ? 'GEMINI_API_KEY=' + (updates[k] === null ? '(kaldırıldı)' : maskKey(updates[k])) : `${k}=${updates[k] === null ? '(varsayılan)' : updates[k]}`).join(', '), user: 'Kullanıcı', tags: ['settings'] }).catch(() => {});
+        res.json({ success: true, changed, geminiReady, settings: currentSettings() });
+    } catch (err) {
+        console.error('[HATA] Ayar yazma:', err.message);
+        res.status(500).json({ success: false, error: `.env yazılamadı: ${err.message}` });
+    }
+});
+
+// Anahtar/model bağlantı testi: küçük bir istek atar (maliyet ihmal edilebilir).
+// Gövdede apiKey verilirse kaydetmeden o anahtar denenir (ilk kurulum akışı).
+app.post('/api/settings/test', async (req, res) => {
+    if (!isLoopback(req)) return res.status(403).json({ success: false, error: 'Yalnızca yerel makineden.' });
+    const b = req.body || {};
+    const key = (b.apiKey && String(b.apiKey).trim()) || process.env.GEMINI_API_KEY;
+    const modelName = (b.model && String(b.model).trim()) || MODEL_NAME;
+    if (!key || key === 'YOUR_API_KEY_HERE') return res.json({ success: false, error: 'API anahtarı tanımlı değil.' });
+    const t0 = Date.now();
+    try {
+        const client = new GoogleGenerativeAI(key);
+        const model = client.getGenerativeModel({ model: modelName, generationConfig: { maxOutputTokens: 4, temperature: 0 } });
+        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Zaman aşımı (15 sn) — ağ/proxy erişimini kontrol edin.')), 15000));
+        await Promise.race([model.generateContent('ping'), timeout]);
+        res.json({ success: true, model: modelName, latencyMs: Date.now() - t0 });
+    } catch (err) {
+        const msg = String(err.message || err);
+        const friendly = /API key not valid|API_KEY_INVALID/i.test(msg) ? 'API anahtarı geçersiz.'
+            : /not found|is not supported/i.test(msg) ? `Model bulunamadı veya bu anahtarla desteklenmiyor: ${modelName}`
+            : /fetch failed|ENOTFOUND|ECONNREFUSED|EAI_AGAIN/i.test(msg) ? 'Google API sunucusuna ulaşılamıyor (internet/proxy).'
+            : msg;
+        res.json({ success: false, error: friendly, latencyMs: Date.now() - t0 });
+    }
+});
+
 // ─── DATABASE API ROUTES ────────────────────────────────────
 
 app.post('/api/save-analysis', async (req, res) => {
@@ -1305,7 +1444,9 @@ function start() {
     // Electron (main.js) pencereyi sunucu dinlemeye başlayınca açar: Promise port ile çözülür.
     let resolveReady;
     const ready = new Promise(r => { resolveReady = r; });
-    const server = app.listen(PORT, () => {
+    // Yalnızca yerel makine (tek kullanıcılı masaüstü). LAN erişimi gerekirse HOST=0.0.0.0
+    const HOST = process.env.HOST || '127.0.0.1';
+    const server = app.listen(PORT, HOST, () => {
         resolveReady(Number(PORT));
         console.log('\n' + '='.repeat(60));
         console.log('  ColdChain AI Server v3.2.0-hybrid (Smart Chunking + SQLite)');
@@ -1346,6 +1487,7 @@ if (require.main === module) {
 module.exports = {
     app,
     start,
+    upsertEnv,
     parseStructuredResponse,
     parseMarkdownResponse,
     parseVerifyResponse,

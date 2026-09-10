@@ -90,6 +90,9 @@ const MKTEngine = {
             criticalHigh: num(c.criticalHigh, upperLimit + 7),
             freezeLimit: (freezeLimit != null && isFinite(freezeLimit)) ? freezeLimit : null,
             gapCapMinutes: Math.max(1, num(c.gapCapMinutes, this.DEFAULT_GAP_CAP_MINUTES)),
+            // Kabul edilen azami kayıt aralığı (dk): en yaygın aralık bunu aşarsa
+            // "kayıt sıklığı sorunu" (karar motoru → REVİZE). Ayarlar ekranından gelir.
+            maxIntervalMinutes: Math.max(1, num(c.maxIntervalMinutes, 60)),
             hysteresis: Math.min(span / 4, Math.max(0, num(c.hysteresis, this.DEFAULT_HYSTERESIS))),
             minExcursionMinutes: Math.max(0, num(c.minExcursionMinutes, this.DEFAULT_MIN_EXCURSION_MINUTES)),
             spikeTolerance: Math.max(0, num(c.spikeTolerance, this.DEFAULT_SPIKE_TOLERANCE)),
@@ -797,7 +800,7 @@ const MKTEngine = {
             validationResult = {
                 gaps,
                 hasCriticalGap: gaps.length > 0,
-                isFrequencyIssue: modal > 60,
+                isFrequencyIssue: modal > o.maxIntervalMinutes,
                 avgGapMin: Math.round(avgGapMin),
                 mostCommonGapMin: modal
             };
