@@ -3,108 +3,71 @@ if (process.platform === 'win32') {
     try { require('child_process').execSync('chcp 65001', { stdio: 'ignore' }); } catch (e) {}
 }
 
-const { app, BrowserWindow, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
-// Backend sunucusunu Electron ile birlikte başlat
-// server.js yalnızca doğrudan çalıştırılınca port açar; Electron'dan start() ile başlatılmalı.
-require('./server.js').start();
+// Backend sunucusunu Electron ile birlikte başlat.
+// server.js yalnızca doğrudan çalıştırılınca port açar; Electron'dan start() ile
+// başlatılır ve sunucu dinlemeye geçince port ile çözülen bir Promise döner.
+// Arayüz (app.html — Kontrol Odası) file:// ile değil, bu sunucudan
+// http://localhost:PORT üzerinden yüklenir: /api/* çağrıları göreli kalır.
+const serverReady = require('./server.js').start();
 
 // Keep a global reference of the window object to prevent garbage collection
 let mainWindow;
 
-function createWindow() {
-    // Dev Note: Ensure assets directory exists if using an icon
+async function createWindow() {
     const iconPath = path.join(__dirname, 'assets', 'icon.png');
-    const fs = require('fs');
-    
-    // Create browser window.
+
     mainWindow = new BrowserWindow({
         width: 1280,
         height: 800,
         minWidth: 1024,
-        minHeight: 768,
+        minHeight: 700,
         show: false,
-        frame: false,
-        fullscreen: true,
+        // Kontrol Odası'nın kendi pencere düğmeleri yok: yerel çerçeve kullanılır
+        // (eski arayüzdeki çerçevesiz pencere + IPC düğmeleri kaldırıldı).
+        frame: true,
+        autoHideMenuBar: true,
+        backgroundColor: '#0b1117',
         webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
         },
         icon: fs.existsSync(iconPath) ? iconPath : undefined
     });
 
-    // Remove the default Electron menu for a cleaner look
     Menu.setApplicationMenu(null);
 
-    // Kapatma, küçültme ve pencere modu IPC işlemleri
-    ipcMain.on('window-minimize', () => {
-        if (mainWindow) mainWindow.minimize();
+    // Dış bağlantılar (mevzuat linkleri vb.) uygulama penceresinde değil tarayıcıda açılsın
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:/i.test(url)) shell.openExternal(url);
+        return { action: 'deny' };
     });
 
-    ipcMain.on('window-close', () => {
-        if (mainWindow) mainWindow.close();
-    });
+    const port = await serverReady;
+    await mainWindow.loadURL(`http://localhost:${port}/app.html`);
 
-    ipcMain.on('window-maximize-toggle', () => {
-        if (!mainWindow) return;
-        
-        // Eğer tam ekrandaysa, önce tam ekrandan çık
-        if (mainWindow.isFullScreen()) {
-            mainWindow.setFullScreen(false);
-            // Fullscreen'den çıkınca pencere otomatik olarak normal boyuta döner
-            return;
-        }
-        
-        // Maximize ↔ Restore toggle
-        if (mainWindow.isMaximized()) {
-            mainWindow.restore();
-        } else {
-            mainWindow.maximize();
-        }
-    });
-
-    // Load the index.html of the app.
-    mainWindow.loadFile('index.html');
-
-    // Show window when ready to prevent flickering
     mainWindow.once('ready-to-show', () => {
         mainWindow.show();
-        mainWindow.maximize(); // Start maximized
+        mainWindow.maximize();
     });
+    // loadURL çözüldüğünde ready-to-show çoktan geçmiş olabilir
+    if (!mainWindow.isVisible()) { mainWindow.show(); mainWindow.maximize(); }
 
-    // Pencere durumu değiştiğinde frontend'e bildir (ikon güncelleme için)
-    mainWindow.on('maximize', () => {
-        mainWindow.webContents.send('window-state-changed', 'maximized');
-    });
-    mainWindow.on('unmaximize', () => {
-        mainWindow.webContents.send('window-state-changed', 'normal');
-    });
-    mainWindow.on('enter-full-screen', () => {
-        mainWindow.webContents.send('window-state-changed', 'fullscreen');
-    });
-    mainWindow.on('leave-full-screen', () => {
-        mainWindow.webContents.send('window-state-changed', 'normal');
-    });
-
-    // Emitted when the window is closed.
     mainWindow.on('closed', function () {
         mainWindow = null;
     });
 }
 
-// This method will be called when Electron has finished initialization
 app.whenReady().then(createWindow);
 
-// Quit when all windows are closed.
 app.on('window-all-closed', function () {
-    // On macOS it is common for applications and their menu bar
-    // to stay active until the user quits explicitly with Cmd + Q
     if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
     if (mainWindow === null) createWindow();
 });

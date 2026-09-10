@@ -1302,7 +1302,11 @@ app.delete('/api/templates/:id', async (req, res) => {
 
 function start() {
     const geminiReady = initGemini();
+    // Electron (main.js) pencereyi sunucu dinlemeye başlayınca açar: Promise port ile çözülür.
+    let resolveReady;
+    const ready = new Promise(r => { resolveReady = r; });
     const server = app.listen(PORT, () => {
+        resolveReady(Number(PORT));
         console.log('\n' + '='.repeat(60));
         console.log('  ColdChain AI Server v3.2.0-hybrid (Smart Chunking + SQLite)');
         console.log('='.repeat(60));
@@ -1330,6 +1334,8 @@ function start() {
         }
         process.exit(1);
     });
+
+    return ready;
 }
 
 if (require.main === module) {

@@ -1,7 +1,15 @@
 /* Ayarlar sayfası gövdesi (Kontrol Odası dili) */
 (function () {
-  const { useState } = React;
+  const { useState, useEffect } = React;
   const { CCIcons: Ic, CRShell } = window;
+
+  // Denetim zinciri durumu — sunucudan canlı (GET /api/audit/verify); sahte sabit metin değil.
+  function ChainStatus({ chain }) {
+    if (chain === undefined) return <div className="set-status" style={{ color: 'var(--t3)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--t3)' }} />Doğrulanıyor…</div>;
+    if (!chain || !chain.success) return <div className="set-status" style={{ color: 'var(--amber)', background: 'var(--amberS)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--amber)' }} />Doğrulanamadı — sunucu çevrimdışı olabilir</div>;
+    if (chain.ok) return <div className="set-status" style={{ color: 'var(--ok)', background: 'var(--okS)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--ok)' }} />Sağlam — {chain.total} kayıt SHA-256 ile doğrulandı</div>;
+    return <div className="set-status" style={{ color: 'var(--bad)', background: 'var(--badS)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--bad)' }} />ZİNCİR BOZUK — {chain.broken.length}/{chain.total} kayıtta uyumsuzluk</div>;
+  }
   const getDocDate = () => {
     const d = new Date();
     const pad = n => String(n).padStart(2, '0');
@@ -63,6 +71,13 @@
     const [sw, setSw] = useState({ mailReject: true, push: false, autoExcel: true, hideDemo: false, vision: true, antifraud: true });
     const [retention, setRetention] = useState('5y');
     const tw = (k) => setSw(s => ({ ...s, [k]: !s[k] }));
+    const [chain, setChain] = useState(undefined);
+    const verifyChain = async () => {
+      setChain(undefined);
+      try { const r = await fetch('/api/audit/verify'); setChain(await r.json()); }
+      catch (e) { setChain({ success: false, error: e.message }); }
+    };
+    useEffect(() => { verifyChain(); }, []);
 
     return (
       <CRShell theme={theme} active="settings" onNav={onNav}>
@@ -152,7 +167,7 @@
           <div className="set-bd" style={{ gridTemplateColumns: '1fr 1fr', display: 'grid', gap: 18 }}>
             <div>
               <Field label="Denetim Zinciri Durumu">
-                <div className="set-status" style={{ color: 'var(--ok)', background: 'var(--okS)', justifyContent: 'flex-start' }}><i style={{ background: 'var(--ok)' }} />Sağlam — 1.247 kayıt SHA-256 ile doğrulandı</div>
+                <ChainStatus chain={chain} />
               </Field>
               <div style={{ height: 12 }} />
               <Field label="Hash Algoritması"><input className="cr-input" value="SHA-256 (hash chain)" readOnly style={{ color: 'var(--t3)' }} /></Field>
@@ -164,7 +179,9 @@
                 </select>
               </Field>
               <div style={{ height: 12 }} />
-              <button className="cr-btn cr-btn2" style={{ width: '100%', justifyContent: 'center' }}><Ic.shield size={15} /> Denetim zincirini şimdi doğrula</button>
+              <button className="cr-btn cr-btn2" style={{ width: '100%', justifyContent: 'center' }} onClick={verifyChain}><Ic.shield size={15} /> Denetim zincirini şimdi doğrula</button>
+              <div style={{ height: 8 }} />
+              <button className="cr-btn cr-btn2" style={{ width: '100%', justifyContent: 'center' }} onClick={() => onNav('audit')}><Ic.report size={15} /> Denetim izini aç</button>
             </div>
           </div>
         </div>

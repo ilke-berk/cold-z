@@ -162,7 +162,7 @@
   .cr-empty{padding:26px 16px;text-align:center;font-size:12px;color:var(--t3);}
   `;
 
-  const NAVS = [['dashboard', 'grid', 'Kontrol Paneli'], ['upload', 'upload', 'Veri Yükleme'], ['analysis', 'activity', 'Analiz & Karar'], ['report', 'report', 'Rapor'], ['templates', 'box', 'Şablon Hafızası'], ['settings', 'cog', 'Ayarlar']];
+  const NAVS = [['dashboard', 'grid', 'Kontrol Paneli'], ['upload', 'upload', 'Veri Yükleme'], ['analysis', 'activity', 'Analiz & Karar'], ['report', 'report', 'Rapor'], ['templates', 'box', 'Şablon Hafızası'], ['audit', 'shield', 'Denetim İzi'], ['settings', 'cog', 'Ayarlar']];
 
   const NOTIFS = [
     { ic: 'alert', tone: 'bad', t: 'MKT ihlali — Şifa Eczanesi', d: 'Cihaz NN-3344-B 11,8°C pik yaptı · iade reddi önerildi', ago: '4 dk önce', unread: true },
@@ -277,7 +277,7 @@
                   </div>
                   <div className="cr-mi"><Ic.user size={16} /> Profilim</div>
                   <div className="cr-mi" onClick={() => { setMenu(null); onNav('settings'); }}><Ic.cog size={16} /> Ayarlar</div>
-                  <div className="cr-mi"><Ic.shield size={16} /> Denetim & Uyum</div>
+                  <div className="cr-mi" onClick={() => { setMenu(null); onNav('audit'); }}><Ic.shield size={16} /> Denetim & Uyum</div>
                   <div style={{ borderTop: '1px solid var(--ln)' }} />
                   <div className="cr-mi danger" onClick={() => { setMenu(null); window.dispatchEvent(new CustomEvent('cc-logout')); }}><Ic.logout size={16} /> Çıkış Yap</div>
                 </div>

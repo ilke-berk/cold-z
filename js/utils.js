@@ -2,11 +2,8 @@
  * ColdChain AI — Utility Functions
  */
 
-// API taban adresi: sayfa http(s) üzerinden sunuluyorsa göreli yol kullanılır
-// (veri, sayfayı veren sunucudan gelir). Electron file:// ile açıldığında yerel sunucu.
-const API_BASE = (typeof location !== 'undefined' && location.protocol === 'file:')
-    ? 'http://localhost:' + (window.COLDCHAIN_PORT || 3000)
-    : '';
+// Not: Arayüz (app.html) her zaman sunucudan http://localhost:PORT üzerinden
+// yüklenir (Electron dahil); /api/* çağrıları göreli yoldur, ayrı taban adresi yok.
 
 const Utils = {
     /**

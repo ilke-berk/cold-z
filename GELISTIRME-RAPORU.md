@@ -283,3 +283,18 @@ Parser tarafı Faz 1-7 ile olgunlaştıktan sonra yapılan kod incelemesi, sahad
 - **TOR aşımı RED değil ŞARTLI:** ürün bazlı stabilite bütçesi (formüler) dolana kadar RED'e çevrilmemeli.
 - **Eski arayüz (`index.html`, `js/pages/`)** hesaplama olarak yeni motoru kullanır ama etiketleri (0-2 / 8-15, "YETERSİZ VERİ" → hatalı sayma) güncellenmedi; Control Room esas arayüz kabul edildi.
 - Formüler (`js/drug-formulary.js`) hâlâ boş; ürün bazlı kural altyapısı ayrı faz.
+
+## 9. Tek Arayüz: Kontrol Odası (Faz 9 — 10.09.2026)
+
+İki paralel arayüz (eski `index.html` + `js/pages/*` ve Kontrol Odası `app.html` + `ui/*.jsx`) birine indirildi. **Kontrol Odası tek arayüzdür**; Electron paketi de artık onu açar.
+
+### Yapılanlar
+- **Electron → Kontrol Odası.** `main.js` sunucuyu başlatır, `server.start()` dinlemeye geçince port ile çözülen Promise döner, pencere `http://localhost:PORT/app.html` yükler (file:// değil → `/api/*` göreli kalır). Çerçevesiz pencere + IPC pencere düğmeleri kaldırıldı (Kontrol Odası'nın kendi düğmeleri yok; yerel çerçeve). `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`; dış linkler sistem tarayıcısında açılır.
+- **Denetim İzi sayfası taşındı.** Yeni `ui/cr-audit.jsx`: son 300 kayıt, tür filtresi, hash zinciri doğrulaması (`GET /api/audit/verify`), Excel dışa aktarım. Sol menüye "Denetim İzi" eklendi; avatar menüsündeki "Denetim & Uyum" artık buraya gider.
+- **Ayarlar'daki sahte zincir durumu** ("1.247 kayıt doğrulandı") canlı doğrulamayla değiştirildi; "Denetim zincirini şimdi doğrula" düğmesi çalışır.
+- **Silinenler:** `index.html`, `js/app.js`, `js/state.js`, `js/components.js`, `js/audit-trail.js`, `js/pages/` (5 dosya), `css/` (10 dosya), `js/test-parser.js` (geliştirme harness'ı). `js/utils.js`'teki file:// tabanlı `API_BASE` kaldırıldı.
+- Grafik yakınlaştırma/kaydırma zaten `cr-decisionchart.jsx`'te vardı; ek taşıma gerekmedi.
+
+### Kalan
+- Kontrol Odası hâlâ React/Babel/xlsx/pdf.js'i CDN'den yükler; internetsiz eczanede açılmaz. Sıradaki iş: kütüphaneleri yerelleştirip JSX'i bir kez derlemek.
+- `.github/workflows/test.yml` yalnızca birim test koşar; `electron-builder` derlemesi hâlâ CI'da denenmiyor.
