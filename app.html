@@ -27,13 +27,10 @@
   <!-- Üçüncü taraf kütüphaneler: YEREL (web/vendor, scripts/build-ui.js üretir).
        Hiçbir CDN bağımlılığı yok; arayüz internetsiz / proxy arkasında da açılır.
        Sürümler: web/vendor/VERSIONS.json -->
-  <script src="web/vendor/xlsx.full.min.js" onerror="window.__ccVendorMissing = true"></script>
-  <script src="web/vendor/pdf.min.js" onerror="window.__ccVendorMissing = true"></script>
-  <script>
-    if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'web/vendor/pdf.worker.min.js';
-  </script>
-  <script src="web/vendor/react.min.js" onerror="window.__ccVendorMissing = true"></script>
-  <script src="web/vendor/react-dom.min.js" onerror="window.__ccVendorMissing = true"></script>
+  <script src="web/vendor/xlsx.full.min.js"></script>
+  <script src="web/vendor/pdf.min.js"></script>
+  <script src="web/vendor/react.min.js"></script>
+  <script src="web/vendor/react-dom.min.js"></script>
 
   <!-- Analiz motorları (mevcut backend ile aynı çekirdek) -->
   <script src="date-format-detector.js"></script>
@@ -72,28 +69,7 @@
   <script src="web/ui/cr-audit.js"></script>
   <script src="web/ui/cr-app.js"></script>
 
-  <script>
-    (function () {
-      var tries = 0;
-      var start = function () {
-        if (window.CRApp && window.CRShell && window.React && window.ReactDOM) {
-          ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(window.CRApp));
-          var boot = document.getElementById('ccBoot');
-          if (boot) { boot.classList.add('hide'); setTimeout(function () { boot.remove(); }, 400); }
-          return;
-        }
-        if (++tries > 100 || window.__ccVendorMissing) {
-          // Derlenmemiş kurulum: sonsuz spinner yerine ne yapılacağını söyle
-          var lbl = document.querySelector('#ccBoot .lbl');
-          if (lbl) lbl.innerHTML = 'Arayüz dosyaları bulunamadı (web/ klasörü yok).<br>Proje dizininde <code>npm run build:ui</code> çalıştırıp sayfayı yenileyin.';
-          var ring = document.querySelector('#ccBoot .ring');
-          if (ring) ring.style.display = 'none';
-          return;
-        }
-        setTimeout(start, 30);
-      };
-      start();
-    })();
-  </script>
+  <!-- Önyükleme ayrı dosyada: CSP (script-src 'self') satır içi script'e izin vermez -->
+  <script src="ui/cc-boot.js"></script>
 </body>
 </html>

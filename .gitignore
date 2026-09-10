@@ -44,3 +44,7 @@ pdf-to-text-test.js
 
 # Derlenmiş arayüz + yerel kütüphaneler (scripts/build-ui.js üretir)
 web/
+
+# Denetim zinciri imza anahtari + zincir basi (userData; gelistirmede proje koku)
+audit.key
+audit.head.json

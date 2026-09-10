@@ -46,6 +46,115 @@
   function Field({ label, children, hint }) { return <div className="cr-field"><label className="cr-label">{label}</label>{children}{hint && <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 4 }}>{hint}</div>}</div>; }
 
   const MODEL_CHOICES = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const ROLE_LABEL = { admin: 'Yönetici', qa: 'QA' };
+  const api = async (url, body, method) => {
+    const r = await fetch(url, { method: method || (body ? 'POST' : 'GET'), headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.success) throw new Error(j.error || ('İstek başarısız (' + r.status + ')'));
+    return j;
+  };
+  const fmtTs = v => { if (!v) return '—'; const d = new Date(String(v).includes('T') ? v : String(v).replace(' ', 'T') + 'Z'); return isNaN(d) ? String(v) : d.toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+
+  // Kendi şifresini değiştir (herkes)
+  function PasswordPanel() {
+    const [cur, setCur] = useState(''); const [nx, setNx] = useState(''); const [nx2, setNx2] = useState('');
+    const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+    const me = (window.CCAuth && window.CCAuth.user) || {};
+    const go = async () => {
+      setMsg(null);
+      if (nx !== nx2) { setMsg({ tone: 'bad', text: 'Yeni şifreler birbiriyle aynı değil.' }); return; }
+      setBusy(true);
+      try { await api('/api/auth/password', { current: cur, next: nx }); setCur(''); setNx(''); setNx2(''); setMsg({ tone: 'ok', text: 'Şifre değiştirildi.' }); }
+      catch (e) { setMsg({ tone: 'bad', text: e.message }); }
+      setBusy(false);
+    };
+    return (
+      <div className="cr-pn" style={{ marginBottom: 16 }}>
+        <div className="cr-ph"><div className="cr-pt"><Ic.user size={15} style={{ color: 'var(--sig)' }} /> HESABIM</div><span className="set-status" style={{ color: 'var(--t2)', border: '1px solid var(--ln2)' }}>{me.email} · {ROLE_LABEL[me.role] || me.role}</span></div>
+        <div className="set-bd">
+          {me.mustChangePassword && <div className="set-msg bad"><Ic.alert size={14} /> Geçici şifreyle giriş yaptınız; lütfen şimdi değiştirin.</div>}
+          {msg && <div className={'set-msg ' + msg.tone}>{msg.tone === 'ok' ? <Ic.check size={14} /> : <Ic.alert size={14} />}{msg.text}</div>}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+            <Field label="Mevcut şifre"><input className="cr-input" type="password" autoComplete="current-password" value={cur} onChange={e => setCur(e.target.value)} /></Field>
+            <Field label="Yeni şifre" hint="En az 8 karakter, harf + rakam"><input className="cr-input" type="password" autoComplete="new-password" value={nx} onChange={e => setNx(e.target.value)} /></Field>
+            <Field label="Yeni şifre (tekrar)"><input className="cr-input" type="password" autoComplete="new-password" value={nx2} onChange={e => setNx2(e.target.value)} /></Field>
+          </div>
+          <div><button className="cr-btn cr-btn2" onClick={go} disabled={busy || !cur || !nx}><Ic.lock size={14} /> Şifremi değiştir</button></div>
+        </div>
+      </div>
+    );
+  }
+
+  // Kullanıcı yönetimi (yalnızca admin)
+  function UsersPanel() {
+    const me = (window.CCAuth && window.CCAuth.user) || {};
+    const [rows, setRows] = useState(null); const [msg, setMsg] = useState(null); const [busy, setBusy] = useState(false);
+    const [nu, setNu] = useState({ email: '', name: '', role: 'qa', password: '' });
+    const [resetFor, setResetFor] = useState(null); const [resetPw, setResetPw] = useState('');
+    const load = async () => { try { const j = await api('/api/users'); setRows(j.data || []); } catch (e) { setMsg({ tone: 'bad', text: e.message }); setRows([]); } };
+    useEffect(() => { load(); }, []);
+    const add = async () => {
+      setBusy(true); setMsg(null);
+      try { await api('/api/users', nu); setNu({ email: '', name: '', role: 'qa', password: '' }); setMsg({ tone: 'ok', text: 'Kullanıcı eklendi. İlk girişte şifresini değiştirmesi istenecek.' }); await load(); }
+      catch (e) { setMsg({ tone: 'bad', text: e.message }); }
+      setBusy(false);
+    };
+    const patch = async (id, body, okText) => {
+      setBusy(true); setMsg(null);
+      try { await api('/api/users/' + id, body, 'PATCH'); setMsg({ tone: 'ok', text: okText }); setResetFor(null); setResetPw(''); await load(); }
+      catch (e) { setMsg({ tone: 'bad', text: e.message }); }
+      setBusy(false);
+    };
+    return (
+      <div className="cr-pn" style={{ marginBottom: 16 }}>
+        <div className="cr-ph"><div className="cr-pt"><Ic.shield size={15} style={{ color: 'var(--sig)' }} /> KULLANICILAR & ROLLER</div><span className="set-status" style={{ color: 'var(--t3)' }}>admin: her şey · qa: analiz, onay, rapor, denetim izi</span></div>
+        <div className="set-bd">
+          {msg && <div className={'set-msg ' + msg.tone}>{msg.tone === 'ok' ? <Ic.check size={14} /> : <Ic.alert size={14} />}{msg.text}</div>}
+          <div style={{ overflowX: 'auto' }}>
+            <table className="tp-tbl" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr>{['E-posta', 'Ad', 'Rol', 'Durum', 'Son giriş', ''].map(h => <th key={h} style={{ textAlign: 'left', color: 'var(--t3)', padding: '8px 10px', borderBottom: '1px solid var(--ln2)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.5px' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {rows === null ? <tr><td colSpan={6} style={{ padding: 12, color: 'var(--t3)' }}>Yükleniyor…</td></tr> : rows.map(u => (
+                  <tr key={u.id}>
+                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--ln)', fontFamily: "'JetBrains Mono',monospace" }}>{u.email}{u.id === me.id ? ' (siz)' : ''}</td>
+                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--ln)' }}>{u.name || '—'}</td>
+                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--ln)' }}>
+                      <select className="cr-select" value={u.role} disabled={busy || u.id === me.id} onChange={e => patch(u.id, { role: e.target.value }, 'Rol güncellendi.')} style={{ padding: '4px 8px', fontSize: 11 }}>
+                        <option value="admin">Yönetici</option><option value="qa">QA</option>
+                      </select>
+                    </td>
+                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--ln)', color: u.active ? 'var(--ok)' : 'var(--bad)', fontWeight: 600 }}>{u.active ? 'Etkin' : 'Pasif'}{u.mustChangePassword ? ' · geçici şifre' : ''}</td>
+                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--ln)', color: 'var(--t3)', fontFamily: "'JetBrains Mono',monospace", fontSize: 11 }}>{fmtTs(u.lastLoginAt)}</td>
+                    <td style={{ padding: '8px 10px', borderBottom: '1px solid var(--ln)', whiteSpace: 'nowrap' }}>
+                      {resetFor === u.id ? (
+                        <span style={{ display: 'inline-flex', gap: 6 }}>
+                          <input className="cr-input" type="text" placeholder="geçici şifre" value={resetPw} onChange={e => setResetPw(e.target.value)} style={{ width: 150, padding: '4px 8px', fontSize: 11 }} />
+                          <button className="cr-btn cr-btn2" disabled={busy || !resetPw} onClick={() => patch(u.id, { password: resetPw }, 'Şifre sıfırlandı; kullanıcı ilk girişte değiştirecek.')} style={{ padding: '4px 10px', fontSize: 11 }}>Kaydet</button>
+                          <button className="cr-btn cr-btn2" onClick={() => { setResetFor(null); setResetPw(''); }} style={{ padding: '4px 10px', fontSize: 11 }}>Vazgeç</button>
+                        </span>
+                      ) : (
+                        <span style={{ display: 'inline-flex', gap: 6 }}>
+                          <button className="cr-btn cr-btn2" disabled={busy} onClick={() => { setResetFor(u.id); setResetPw(''); }} style={{ padding: '4px 10px', fontSize: 11 }}>Şifre sıfırla</button>
+                          {u.id !== me.id && <button className="cr-btn cr-btn2" disabled={busy} onClick={() => patch(u.id, { active: !u.active }, u.active ? 'Kullanıcı pasifleştirildi; açık oturumları kapatıldı.' : 'Kullanıcı etkinleştirildi.')} style={{ padding: '4px 10px', fontSize: 11, color: u.active ? 'var(--bad)' : 'var(--ok)' }}>{u.active ? 'Pasifleştir' : 'Etkinleştir'}</button>}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr .7fr 1fr auto', gap: 10, alignItems: 'end' }}>
+            <Field label="E-posta"><input className="cr-input" type="email" value={nu.email} onChange={e => setNu(o => ({ ...o, email: e.target.value }))} /></Field>
+            <Field label="Ad Soyad"><input className="cr-input" value={nu.name} onChange={e => setNu(o => ({ ...o, name: e.target.value }))} /></Field>
+            <Field label="Rol"><select className="cr-select" value={nu.role} onChange={e => setNu(o => ({ ...o, role: e.target.value }))}><option value="qa">QA</option><option value="admin">Yönetici</option></select></Field>
+            <Field label="Geçici şifre" hint="İlk girişte değiştirilir"><input className="cr-input" type="text" value={nu.password} onChange={e => setNu(o => ({ ...o, password: e.target.value }))} /></Field>
+            <button className="cr-btn" onClick={add} disabled={busy || !nu.email || !nu.password} style={{ marginBottom: 18 }}><Ic.plus size={14} /> Ekle</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   function CRSettings({ theme, onNav = () => {} }) {
     const S = window.CCSettings;
@@ -235,6 +344,9 @@
             </div>
           </div>
         </div>
+
+        <PasswordPanel />
+        {((window.CCAuth && window.CCAuth.user) || {}).role === 'admin' && <UsersPanel />}
 
         <div className="set-foot">
           <button className="cr-btn" onClick={saveAll} disabled={busy || !dirty}><Ic.save size={15} /> {busy ? 'Kaydediliyor…' : 'Değişiklikleri kaydet'}</button>

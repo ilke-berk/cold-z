@@ -332,3 +332,35 @@ Ayarlar ekranı önceden tamamen sahteydi: kaydet düğmelerinin işleyicisi yok
 E-posta/push bildirimi, otomatik Excel, demo gizleme, KVKK saklama süresi, "Görüntü/OCR" ve "Anti-Fraud" anahtarları: hiçbirinin karşılığı yoktu. Etkisi olmayan ayar yanlış güven verir; ihtiyaç olduğunda gerçek uygulamasıyla geri gelir.
 
 Testler: `tests/settings.test.js` (upsertEnv birleştirme, CCSettings sanitize/engineConfig, karar motoru azami aralık) — **311/311**. Uçtan uca: kur yaz → oku → geri al, `.env` byte-byte eski hâline döndü; geçersiz anahtar/model reddedildi; bağlantı testi 805 ms; yerel TOR ayarı Veri Yükleme'ye taşındı.
+
+## 12. Uyum İddiaları Gerçeğe Çekildi (Faz 12 — 10.09.2026)
+
+Arayüz "21 CFR Part 11 / FDA / SHA-256 denetim zinciri" rozetleri taşıyor ama giriş ekranı istemci tarafı taklitti (sabit e-posta/şifre, localStorage anahtarı), API'de hiçbir uç kimlik istemiyordu, denetim zinciri anahtarsız SHA-256 idi (DB'ye erişen herkes zinciri yeniden hesaplayabilirdi) ve eş zamanlı iki kayıt zinciri kalıcı olarak bozuyordu. Bu fazda iddialar ya karşılandı ya da metinden kaldırıldı.
+
+### Kimlik doğrulama ve roller — `auth.js`
+- Sunucu tarafı kullanıcı tablosu (`users`), şifre **scrypt** özeti; oturum **HttpOnly + SameSite=Strict** çerez (12 sa kayan, "beni hatırla" 7 gün). Oturumlar bellek içi (süreç yeniden başlayınca yeniden giriş).
+- Roller: **admin** (ayarlar, şablon silme, kullanıcı yönetimi) · **qa** (analiz, onay, rapor, denetim izi). `/api/*` — health ve auth/status|setup|login hariç — oturum ister; 401 dönen her çağrıda arayüz giriş ekranına döner.
+- İlk çalıştırma: hiç kullanıcı yoksa giriş ekranı "İlk kurulum" moduna geçer ve ilk yöneticiyi oluşturur (yalnızca loopback). Sonraki kullanıcılar Ayarlar › Kullanıcılar'dan (geçici şifre, ilk girişte değiştirme). Herkes kendi şifresini Ayarlar › Hesabım'dan değiştirir.
+- Başarısız giriş: IP başına 5 deneme → 15 dk kilit; her giriş/çıkış/başarısız deneme/kullanıcı değişikliği denetim zincirinde. Denetim kayıtlarındaki kimlik artık **istemciden değil oturumdan** gelir.
+- Şifre politikası: ≥ 8 karakter, harf + rakam. Son etkin yönetici düşürülemez/pasifleştirilemez; kullanıcı kendini pasifleştiremez.
+
+### İmzalı ve yarışsız denetim zinciri — `database.js`
+- Hash artık **HMAC-SHA256**; anahtar `audit.key` (userData, 0600, DB'den ayrı). Anahtar olmadan satırlar yeniden hesaplanıp zincir "tamir" edilemez. Eski düz SHA-256 satırlar `legacyCount` olarak ayrı raporlanır (zincir bütünlüğü korunur).
+- Zincir başı `audit.head.json` (son id + hash): sondan satır silme artık `headMismatch` ile yakalanır.
+- Yazmalar sıralı kuyrukta: eş zamanlı iki kayıt aynı `prev_hash`'i alamaz.
+- **Sınır:** diske tam erişimi olan biri anahtarı da alır; bu zincir, "DB anahtar olmadan düzenlenmedi" garantisi verir, donanım güvenlik modülü değildir.
+
+### İçerik güvenlik politikası ve sunucu sertleştirme — `server.js`
+- CSP: `script-src 'self'`, `connect-src 'self'`, `frame-ancestors 'none'`…; satır içi önyükleme `ui/cc-boot.js`'e taşındı, `onerror` öznitelikleri kaldırıldı. `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
+- Statik sunumda `.env`, `*.db`, `audit.key`, sunucu kaynakları, `node_modules/`, `tests/`, `scripts/` → 404 (geliştirmede veritabanı dosyası tarayıcıdan indirilebiliyordu).
+- Genel hata yakalayıcı: multer boyut/tür ve JSON hataları yığın izi yerine JSON; iç ayrıntı sızmaz.
+- Gemini çağrılarına istek zaman aşımı (`GEMINI_TIMEOUT_MS`, varsayılan 180 sn): asılı çağrı işçiyi sonsuza dek tutmaz.
+- KVKK: sunucu konsoluna dosya adı (eczane/kişi adı taşıyabilir) yerine tür + boyut + kullanıcı yazılır.
+
+### Metinler
+- "GDP / 21 CFR Part 11", "FDA" rozetleri kaldırıldı; yerine doğru olan yazıldı: **TİTCK GDP odaklı karar motoru**, **imzalı hash-zincirli denetim izi**, KVKK rozetinde "OCR için belge görüntüsü Google Gemini'ye gönderilir" açıklaması. Sabit "Elif Aydın" avatarı gerçek oturum kullanıcısıyla değişti; demo hesap kutusu ve ekrana basılı şifre kaldırıldı.
+
+### Yapılmayan / kalan
+- Belge görüntülerinde eczane adı/seri maskelenmez (piksel düzeyinde pratik değil; OCR değeri olan alanlar). Karşı önlem açıklama + rızadır: Veri Yükleme'ye tek seferlik KVKK bildirimi ve analiz silme/saklama süresi (purge) sıradaki iş.
+- Oturumlar bellek içi; çok süreçli/yeniden başlayan kurulumda kalıcı oturum gerekir.
+- Testler: `tests/auth.test.js` (scrypt, çerez, oturum ömrü, kilit, uçtan uca kurulum→giriş→rol→çıkış sahte DB ile) — **319/319**. Tarayıcıda: ilk kurulum, yanlış şifre, giriş, kullanıcı ekleme, zincir doğrulaması (5 imzalı + 12 eski satır, baş eşleşiyor), 401 → giriş ekranı; CSP ihlali yok.

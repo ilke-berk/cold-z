@@ -71,6 +71,40 @@ const upload = multer({
     }
 });
 
+// ─── Güvenlik başlıkları + hassas dosya engeli ──────────────
+// CSP: yalnızca aynı kökenden script/font/bağlantı; satır içi script yok
+// (önyükleme ui/cc-boot.js'te), satır içi stil serbest (React style prop).
+const CSP = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+].join('; ');
+const SENSITIVE_PATH = /(^|\/)(\.env(\..*)?|.*\.db(-journal|-wal|-shm)?|audit\.key|audit\.head\.json|package(-lock)?\.json|server\.js|database\.js|auth\.js|main\.js|pdf-helper\.js|vision-helper\.js)$/i;
+app.use((req, res, next) => {
+    res.setHeader('Content-Security-Policy', CSP);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    // Proje kökü statik sunulur; veritabanı, .env, imza anahtarı ve sunucu
+    // kaynak dosyaları tarayıcıya asla verilmez.
+    if (!req.path.startsWith('/api/') && (SENSITIVE_PATH.test(req.path) || /^\/(node_modules|tests|scripts|\.git|\.github)(\/|$)/.test(req.path))) {
+        return res.status(404).end();
+    }
+    next();
+});
+const isLoopback = (req) => {
+    const a = String(req.socket && req.socket.remoteAddress || '');
+    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+};
+
 // ─── Statik dosya sunumu ────────────────────────────────────
 // Geliştirme: kaynak dosyaları (.html/.js/.jsx) cache'leme — kod değişikliği
 // tarayıcıyı yenileyince anında yansısın (eski cache'lenmiş JSX sorununu önler).
@@ -84,6 +118,16 @@ app.use(express.static(path.join(__dirname), {
     },
 }));
 app.use(express.json({ limit: '20mb' }));
+
+// ─── Kimlik doğrulama (Faz 12) ──────────────────────────────
+// Sunucu tarafı oturum (HttpOnly çerez), kullanıcı tablosu, admin/qa rolleri.
+// /api/* uçları — health ve auth/status|setup|login hariç — oturum ister.
+const { createAuth } = require('./auth');
+const auth = createAuth({ db, audit: (e) => db.addAuditEntry(e), isLoopback });
+app.use(auth.requireAuth);
+auth.register(app);
+const requireAdmin = auth.requireRole('admin');
+const actor = (req) => (req.user && req.user.email) || 'Sistem';
 
 // ─── Köken kısıtı ────────────────────────────────────────────
 // Arayüz (Electron dahil) her zaman bu sunucudan http://localhost:PORT ile
@@ -144,6 +188,11 @@ function upsertEnv(text, updates) {
     }
     return out.join('\n') + '\n';
 }
+
+// Her Gemini çağrısına istek zaman aşımı: asılı kalan bir çağrı işçiyi ve
+// HTTP isteğini sonsuza dek tutmasın (SDK requestOptions.timeout, ms).
+const GEMINI_REQ_OPTS = { timeout: Math.max(30000, parseInt(process.env.GEMINI_TIMEOUT_MS) || 180000) };
+const gemModel = (params) => genAI.getGenerativeModel(params, GEMINI_REQ_OPTS);
 
 function initGemini() {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -262,8 +311,10 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
 
     try {
         const fileSizeKB = (req.file.size / 1024).toFixed(1);
+        // KVKK: dosya adı eczane/kişi adı taşıyabilir — konsola yalnızca tür ve boyut
+        const ext = (req.file.originalname.match(/\.[a-z0-9]+$/i) || [''])[0].toLowerCase();
         console.log(`-`.repeat(60));
-        console.log(`[ISTEK] ${req.file.originalname} (${fileSizeKB} KB, ${req.file.mimetype})`);
+        console.log(`[ISTEK] ${ext || '(uzantısız)'} dosya (${fileSizeKB} KB, ${req.file.mimetype}) · ${actor(req)}`);
         console.log(`-`.repeat(60));
 
         // --- AKILLI CHUNKING ---
@@ -280,8 +331,8 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
         console.log(`🤖 ${chunks.length} parça işleniyor (model: ${MODEL_NAME}, mod: ${STRUCTURED_OUTPUT ? 'JSON şema' : 'markdown'}, paralellik: ${CONCURRENCY})...\n`);
 
         const baseGen = { maxOutputTokens: 65536, temperature: 0 }; // OCR işinde determinizm gerekir
-        const modelMd = genAI.getGenerativeModel({ model: MODEL_NAME, generationConfig: baseGen });
-        const modelJson = genAI.getGenerativeModel({
+        const modelMd = gemModel({ model: MODEL_NAME, generationConfig: baseGen });
+        const modelJson = gemModel({
             model: MODEL_NAME,
             generationConfig: { ...baseGen, responseMimeType: 'application/json', responseSchema: EXTRACTION_RESPONSE_SCHEMA }
         });
@@ -887,7 +938,7 @@ app.post('/api/analyze-schema', upload.single('file'), async (req, res) => {
             console.log(`${'='.repeat(55)}`);
         }
 
-        const model = genAI.getGenerativeModel({
+        const model = gemModel({
             model: MODEL_NAME,
             generationConfig: { maxOutputTokens: 4096 }
         });
@@ -1058,7 +1109,7 @@ app.post('/api/verify-rows', async (req, res) => {
 
     try {
         const startTime = Date.now();
-        const model = genAI.getGenerativeModel({
+        const model = gemModel({
             model: MODEL_NAME,
             generationConfig: {
                 maxOutputTokens: 4096,
@@ -1115,11 +1166,7 @@ app.get('/api/health', (req, res) => {
 // ─── AYARLAR (.env) ─────────────────────────────────────────
 // Ayarlar ekranı API anahtarını, modeli ve fiyat/kur değerlerini buradan
 // okur/yazar. Anahtar hiçbir zaman düz metin döndürülmez (maskeli son 4 hane).
-// Yazma yalnızca yerel makineden (loopback) kabul edilir.
-const isLoopback = (req) => {
-    const a = String(req.socket && req.socket.remoteAddress || '');
-    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
-};
+// Yazma yalnızca yerel makineden (loopback) ve admin rolüyle kabul edilir.
 const SETTINGS_KEYS = { apiKey: 'GEMINI_API_KEY', model: 'GEMINI_MODEL', priceIn: 'PRICE_INPUT_PER_M', priceOut: 'PRICE_OUTPUT_PER_M', usdTry: 'USD_TRY_RATE', extractConcurrency: 'EXTRACT_CONCURRENCY' };
 
 function currentSettings() {
@@ -1145,7 +1192,7 @@ app.get('/api/settings', (req, res) => {
     res.json({ success: true, settings: currentSettings() });
 });
 
-app.post('/api/settings', (req, res) => {
+app.post('/api/settings', requireAdmin, (req, res) => {
     if (!isLoopback(req)) return res.status(403).json({ success: false, error: 'Ayarlar yalnızca yerel makineden değiştirilebilir.' });
     const b = req.body || {};
     const updates = {};
@@ -1190,7 +1237,7 @@ app.post('/api/settings', (req, res) => {
         const geminiReady = initGemini();
         const changed = Object.keys(updates);
         console.log(`[AYAR] .env güncellendi: ${changed.map(k => k === SETTINGS_KEYS.apiKey ? 'GEMINI_API_KEY (maskeli)' : k).join(', ')}`);
-        db.addAuditEntry({ type: 'settings', action: 'Ayarlar güncellendi', details: changed.map(k => k === SETTINGS_KEYS.apiKey ? 'GEMINI_API_KEY=' + (updates[k] === null ? '(kaldırıldı)' : maskKey(updates[k])) : `${k}=${updates[k] === null ? '(varsayılan)' : updates[k]}`).join(', '), user: 'Kullanıcı', tags: ['settings'] }).catch(() => {});
+        db.addAuditEntry({ type: 'settings', action: 'Ayarlar güncellendi', details: changed.map(k => k === SETTINGS_KEYS.apiKey ? 'GEMINI_API_KEY=' + (updates[k] === null ? '(kaldırıldı)' : maskKey(updates[k])) : `${k}=${updates[k] === null ? '(varsayılan)' : updates[k]}`).join(', '), user: actor(req), tags: ['settings'] }).catch(() => {});
         res.json({ success: true, changed, geminiReady, settings: currentSettings() });
     } catch (err) {
         console.error('[HATA] Ayar yazma:', err.message);
@@ -1200,7 +1247,7 @@ app.post('/api/settings', (req, res) => {
 
 // Anahtar/model bağlantı testi: küçük bir istek atar (maliyet ihmal edilebilir).
 // Gövdede apiKey verilirse kaydetmeden o anahtar denenir (ilk kurulum akışı).
-app.post('/api/settings/test', async (req, res) => {
+app.post('/api/settings/test', requireAdmin, async (req, res) => {
     if (!isLoopback(req)) return res.status(403).json({ success: false, error: 'Yalnızca yerel makineden.' });
     const b = req.body || {};
     const key = (b.apiKey && String(b.apiKey).trim()) || process.env.GEMINI_API_KEY;
@@ -1286,11 +1333,12 @@ app.get('/api/stats', async (req, res) => {
 
 app.post('/api/audit', async (req, res) => {
     try {
-        const { type, action, details, user, tags } = req.body || {};
+        const { type, action, details, tags } = req.body || {};
         if (!type || !action) {
             return res.status(400).json({ success: false, error: 'type ve action zorunlu.' });
         }
-        const entry = await db.addAuditEntry({ type, action, details, user, tags });
+        // Kimlik istemciden değil oturumdan gelir (istemci "user" alanı yok sayılır)
+        const entry = await db.addAuditEntry({ type: String(type).slice(0, 40), action: String(action).slice(0, 200), details: details == null ? '' : String(details).slice(0, 4000), user: actor(req), tags });
         res.json({ success: true, ...entry });
     } catch (err) {
         console.error('[HATA] Audit kayit hatasi:', err.message);
@@ -1381,7 +1429,8 @@ app.post('/api/templates/match', async (req, res) => {
 
 app.post('/api/templates', async (req, res) => {
     try {
-        const { fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, source, user } = req.body || {};
+        const { fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, source } = req.body || {};
+        const user = actor(req);
         if (!fingerprint || !kind || !schema) {
             return res.status(400).json({ success: false, error: 'fingerprint, kind ve schema zorunlu.' });
         }
@@ -1410,7 +1459,7 @@ app.get('/api/templates', async (req, res) => {
     }
 });
 
-app.delete('/api/templates/:id', async (req, res) => {
+app.delete('/api/templates/:id', requireAdmin, async (req, res) => {
     try {
         const id = parseInt(req.params.id);
         if (isNaN(id)) {
@@ -1425,7 +1474,7 @@ app.delete('/api/templates/:id', async (req, res) => {
             type: 'template',
             action: 'Format şablonu silindi',
             details: `#${id} ${deleted.brand || 'Etiketsiz marka'} · ${deleted.kind} · ${deleted.useCount} kez kullanılmış · parmak izi ${String(deleted.fingerprint).slice(0, 12)}…`,
-            user: (req.body && req.body.user) || undefined,
+            user: actor(req),
             tags: ['şablon', 'silme']
         }).catch(() => {});
         res.json({ success: true, deleted: { id: deleted.id, brand: deleted.brand } });
@@ -1433,6 +1482,19 @@ app.delete('/api/templates/:id', async (req, res) => {
         console.error('[HATA] Sablon silme hatasi:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
+});
+
+// ─── Genel hata yakalayıcı ──────────────────────────────────
+// Multer (boyut/tür) ve beklenmeyen hatalar HTML yığın izi yerine JSON döner;
+// iç ayrıntı (dosya yolu, SDK mesajı) istemciye sızmaz, sunucu günlüğüne yazılır.
+app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    if (err && err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ success: false, error: 'Dosya 20 MB sınırını aşıyor.' });
+    if (err && /Desteklenmeyen dosya türü/.test(err.message)) return res.status(415).json({ success: false, error: err.message });
+    if (err && err.type === 'entity.too.large') return res.status(413).json({ success: false, error: 'İstek gövdesi çok büyük.' });
+    if (err && err.type === 'entity.parse.failed') return res.status(400).json({ success: false, error: 'Geçersiz JSON.' });
+    console.error('[HATA] İşlenmeyen hata:', err && err.stack ? err.stack.split('\n')[0] : err);
+    res.status(500).json({ success: false, error: 'Sunucu hatası. Ayrıntı için sunucu günlüğüne bakın.' });
 });
 
 // ─── SUNUCUYU BAŞLAT ────────────────────────────────────────

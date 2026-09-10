@@ -172,6 +172,7 @@
   ];
   const ntTone = t => ({ ok: ['var(--ok)', 'var(--okS)'], warn: ['var(--amber)', 'var(--amberS)'], bad: ['var(--bad)', 'var(--badS)'], sig: ['var(--sig)', 'var(--sigS)'] }[t]);
   const pad2 = n => String(n).padStart(2, '0');
+  const ROLE_LABEL = { admin: 'Yönetici', qa: 'Kalite Güvence (QA)' };
 
   const tone = t => ({ ok: ['var(--ok)', 'var(--okS)'], warn: ['var(--amber)', 'var(--amberS)'], rev: ['var(--rev)', 'var(--revS)'], bad: ['var(--bad)', 'var(--badS)'] }[t]);
   function Badge({ decision }) { const m = DM[decision]; const [c, s] = tone(m.tone); return <span className="cr-bd" style={{ color: c, background: s }}><i style={{ background: c }} />{m.tr}</span>; }
@@ -200,6 +201,9 @@
     }, []);
 
     const clock = `${pad2(now.getDate())}.${pad2(now.getMonth() + 1)}.${now.getFullYear()} · ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    // Oturum kullanıcısı (sunucudan; cr-app.jsx window.CCAuth.user'a yazar)
+    const u = (window.CCAuth && window.CCAuth.user) || {};
+    const initials = String(u.name || u.email || '?').split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('') || '?';
     const unread = NOTIFS.filter(n => n.unread).length;
     const ql = q.trim().toLowerCase();
     const results = ql ? CCData.analyses.filter(a => (a.pharmacy + ' ' + a.drug + ' ' + a.serial + ' ' + a.city).toLowerCase().includes(ql)).slice(0, 6) : [];
@@ -223,7 +227,7 @@
                 </button>;
               })}
             </div>
-            {!collapsed && <div className="cr-badges" style={{ display: 'flex', gap: 6 }}>{['GDP', 'FDA', 'KVKK'].map(b => <span key={b} className="cr-chip cr-up" style={{ flex: 1, textAlign: 'center' }}>{b}</span>)}</div>}
+            {!collapsed && <div className="cr-badges" style={{ display: 'flex', gap: 6 }}>{['TİTCK GDP', 'KVKK'].map(b => <span key={b} className="cr-chip cr-up" style={{ flex: 1, textAlign: 'center' }} title={b === 'KVKK' ? 'Veriler yerel; OCR için belge görüntüsü Google Gemini\'ye gönderilir' : 'TİTCK İyi Dağıtım Uygulamaları kılavuzu odaklı karar motoru'}>{b}</span>)}</div>}
           </div>
         </aside>
         <div className="cr-main">
@@ -268,14 +272,14 @@
             </div>
 
             <div className="cr-wrap">
-              <div className="cr-av" style={{ cursor: 'pointer' }} onClick={() => setMenu(m => m === 'avatar' ? null : 'avatar')}>EA</div>
+              <div className="cr-av" style={{ cursor: 'pointer' }} onClick={() => setMenu(m => m === 'avatar' ? null : 'avatar')} title={u.email}>{initials}</div>
               {menu === 'avatar' && (
                 <div className="cr-dd" style={{ right: 0, width: 250 }}>
                   <div className="cr-mhd">
-                    <span className="cr-mav">EA</span>
-                    <div style={{ minWidth: 0 }}><div className="cr-mnm">Elif Aydın</div><div className="cr-mrl">Kalite Güvence (QA)</div><div className="cr-mml">elif.aydin@coldchain.ai</div></div>
+                    <span className="cr-mav">{initials}</span>
+                    <div style={{ minWidth: 0 }}><div className="cr-mnm">{u.name || u.email || 'Kullanıcı'}</div><div className="cr-mrl">{ROLE_LABEL[u.role] || u.role || ''}</div><div className="cr-mml">{u.email || ''}</div></div>
                   </div>
-                  <div className="cr-mi"><Ic.user size={16} /> Profilim</div>
+                  <div className="cr-mi" onClick={() => { setMenu(null); onNav('settings'); }}><Ic.user size={16} /> Profilim / Şifre</div>
                   <div className="cr-mi" onClick={() => { setMenu(null); onNav('settings'); }}><Ic.cog size={16} /> Ayarlar</div>
                   <div className="cr-mi" onClick={() => { setMenu(null); onNav('audit'); }}><Ic.shield size={16} /> Denetim & Uyum</div>
                   <div style={{ borderTop: '1px solid var(--ln)' }} />
