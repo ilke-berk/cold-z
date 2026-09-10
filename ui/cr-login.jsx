@@ -209,7 +209,7 @@
 
             <div className="lg-foot">
               {['TİTCK GDP', 'KVKK'].map(b => <span key={b} className="lg-chip">{b}</span>)}
-              <span style={{ marginLeft: 'auto' }} className="lg-m">v2.1</span>
+              <span style={{ marginLeft: 'auto' }} className="lg-m">v{window.CC_VERSION || "?"}</span>
             </div>
           </div>
         </div>

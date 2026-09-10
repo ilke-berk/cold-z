@@ -398,7 +398,7 @@
         <section className="pd-sig">
           <div>
             <div className="pd-sigT">Sistem Referansı</div>
-            <div className="pd-sigSub" style={{ marginTop: 6 }}>ColdChain AI v2.1 — Verification Service<br />Belge No: <span className="pd-mono">{docId(S)}</span><br />Yapay zeka destekli otomatik analiz.</div>
+            <div className="pd-sigSub" style={{ marginTop: 6 }}>ColdChain AI v{window.CC_VERSION || "?"} — Verification Service<br />Belge No: <span className="pd-mono">{docId(S)}</span><br />Yapay zeka destekli otomatik analiz.</div>
           </div>
           <div>
             <div className="pd-sigT">Kalite Güvence Müdürü Onayı</div>

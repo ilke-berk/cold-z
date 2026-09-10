@@ -379,3 +379,31 @@ Testler: `retentionCutoffISO` (**320/320**). Tarayıcıda: bildirim → onay →
 ### Kalan
 - Purge ve silme SQL'i CI'da test edilmiyor (sqlite3 `--ignore-scripts` ile kurulmuyor); yalnızca yerelde uçtan uca doğrulandı.
 - Denetim izinde eczane adı/ilaç adı metin olarak kalır (silinen kaydın özeti). Bu bilinçli: silme işleminin kendisi izlenebilir olmalı.
+
+## 14. Bağımlılıklar, Paketleme, Yedekleme, README, Tek Sürüm (Faz 14 — 10.09.2026)
+
+### Bağımlılıklar
+| Eski | Yeni | Neden |
+|---|---|---|
+| `@google/generative-ai` 0.21 (kullanımdan kaldırıldı) | `@google/genai` 2.x + `gemini-client.js` sarmalayıcısı | Çağrı noktaları (`getGenerativeModel` / `generateContent` / `text()` / `usageMetadata` / `finishReason`) aynı yüzeyle korundu; istek zaman aşımı `httpOptions.timeout`. Gerçek OCR ile uçtan uca doğrulandı (6 satır, 1.218 token). |
+| `xlsx` 0.18.5 (npm, düzeltmesi olmayan açıklar) | SheetJS 0.20.3 (resmi CDN tarball, devDependency) | API aynı; tarayıcıya `web/vendor/xlsx.full.min.js` olarak kopyalanır. |
+| `multer` 1.x (ömrü doldu) | `multer` 2.3 | Bellek depolama API'si aynı. |
+| `canvas` + `vision-helper.js` | kaldırıldı | Ölü kod; asar içinde kırılan tek native modüldü. |
+| `react`, `react-dom`, `pdfjs-dist` (prod) | devDependencies | Yalnızca derleme sırasında `web/vendor`'a kopyalanır; kurulum paketine node_modules'tan girmez. |
+
+`npm audit fix` sonrası üretim bağımlılıklarında kalan 9 uyarının tamamı `sqlite3 → node-gyp 8` **kurulum araç zinciri**nden (brace-expansion, ip-address, tar, @tootallnate/once); çalışma zamanında yüklenmez, önceden derlenmiş ikili kullanılır. Kalıcı çözüm `better-sqlite3` geçişi (ayrı iş). `electron` 41.0.2'de bırakıldı (patch yükseltmesi ikili indirme ister; yerelde `npm rebuild electron` ile).
+
+### Paketleme
+- `package.json build.files` allowlist: yalnızca çalışma zamanı dosyaları (`main/server/database/auth/gemini-client/pdf-helper/date-format-detector.js`, `app.html`, `js/`, `ui/*.js`, `web/`); `ui/*.jsx`, `tests/`, `scripts/`, `.env`, `*.db`, `audit.*`, `backups/` dışarıda. `asarUnpack: **/*.node`.
+- CI'a **Windows paketleme provası** eklendi: `npm ci` (native derleme dahil) + `electron-builder --win --dir` + asar içeriği doğrulaması (gereken dosyalar var, girmemesi gerekenler yok) + artefakt.
+
+### Yedekleme
+- `POST /api/maintenance/backup` (admin) ve günlük otomatik (`BACKUP_AUTO=0` kapatır, `BACKUP_KEEP` varsayılan 7): `backups/<zaman damgası>/` altına **`VACUUM INTO`** ile tutarlı DB anlık görüntüsü + `audit.key` + `audit.head.json` + `MANIFEST.json` (geri yükleme talimatı). `.env` (API anahtarı) yedeğe girmez. Her yedek denetim izine yazılır; Ayarlar'da "Şimdi yedekle" ve son yedek bilgisi.
+
+### Tek sürüm kaynağı
+`package.json` `version` → sunucu (`/api/health`, açılış logu) ve arayüz (`web/version.js` → `window.CC_VERSION`; giriş ekranı, rapor, sertifika). 2.0.0 / 3.2.0-hybrid / v2.1 karmaşası bitti: **3.3.0**.
+
+### README
+Kurulum, komutlar, mimari şema, veri konumları, yedekleme/geri yükleme, KVKK ve ortam değişkenleri.
+
+Testler: `tests/gemini-client.test.js` (**324/324**).

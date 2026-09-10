@@ -85,6 +85,11 @@ function vendor() {
     }
     fs.writeFileSync(path.join(OUT_VENDOR, 'fonts.css'), css);
     fs.writeFileSync(path.join(OUT_VENDOR, 'VERSIONS.json'), JSON.stringify(versions, null, 2) + '\n');
+
+    // Tek sürüm kaynağı: package.json → web/version.js (arayüz window.CC_VERSION okur)
+    const appVersion = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+    fs.writeFileSync(path.join(OUT, 'version.js'), `window.CC_VERSION = ${JSON.stringify(appVersion)};\n`);
+    versions.app = appVersion;
     log(`vendor: ${VENDOR.length} kütüphane + fontlar → web/vendor (${Object.entries(versions).map(([k, v]) => `${k}@${v}`).join(', ')})`);
 }
 

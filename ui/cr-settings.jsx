@@ -178,6 +178,10 @@
     const [conc, setConc] = useState(2);
     const [retention, setRetention] = useState('0');   // gün; 0 = sınırsız (KVKK saklama süresi)
     const [purging, setPurging] = useState(false);
+    const [backingUp, setBackingUp] = useState(false);
+    const [backups, setBackups] = useState(null);       // {root, items}
+    const loadBackups = async () => { try { const j = await api('/api/maintenance/backups'); setBackups({ root: j.root, items: j.items || [] }); } catch (e) { /* qa rolü: liste yok */ } };
+    useEffect(() => { if (((window.CCAuth && window.CCAuth.user) || {}).role === 'admin') loadBackups(); }, []);
     const [msg, setMsg] = useState(null);             // {tone, text}
     const [busy, setBusy] = useState(false);
     const [testing, setTesting] = useState(false);
@@ -340,6 +344,17 @@
             <div className="set-bd">
               <Field label="Denetim Zinciri Durumu"><ChainStatus chain={chain} /></Field>
               <Field label="İmza" hint={chain && chain.success && chain.signing ? chain.signing + (chain.legacyCount ? ` · ${chain.legacyCount} eski (imzasız) satır` : '') : ''}><input className="cr-input" value="HMAC-SHA256 hash zinciri" readOnly style={{ color: 'var(--t3)' }} /></Field>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
+                <Field label="Yedekleme" hint={backups && backups.items && backups.items.length ? `Son yedek: ${backups.items[0].name.replace('T', ' ').replace(/-(\d\d)-(\d\d)$/, ':$1:$2')} · ${backups.items.length} yedek · ${backups.root}` : (backups ? 'Henüz yedek yok. Günlük otomatik yedek açık (BACKUP_AUTO=0 ile kapanır).' : '')}>
+                  <input className="cr-input" value="Veritabanı anlık görüntüsü + denetim imza anahtarı + zincir başı (.env hariç)" readOnly style={{ color: 'var(--t3)' }} />
+                </Field>
+                <button className="cr-btn cr-btn2" style={{ marginBottom: 18 }} disabled={backingUp || !srv} onClick={async () => {
+                  setBackingUp(true); setMsg(null);
+                  try { const j = await api('/api/maintenance/backup', {}); setMsg({ tone: 'ok', text: `Yedek alındı: ${j.dir} (${(j.bytes / 1024).toFixed(0)} KB, ${j.files.join(', ')})` }); loadBackups(); }
+                  catch (e) { setMsg({ tone: 'bad', text: e.message }); }
+                  setBackingUp(false);
+                }}><Ic.save size={14} /> {backingUp ? 'Yedekleniyor…' : 'Şimdi yedekle'}</button>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
                 <Field label="KVKK Veri Saklama Süresi (gün, 0 = sınırsız)" hint="Süreyi aşan analizler, ham seriler ve cihaz seri kayıtları her gün otomatik silinir; denetim izi silinmez">
                   <input className="cr-input" type="number" min="0" step="1" value={retention} onChange={e => setRetention(e.target.value)} disabled={!srv} />

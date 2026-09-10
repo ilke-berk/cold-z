@@ -41,7 +41,7 @@ const envPath = isPackaged && userDataPath
 
 require('dotenv').config({ path: envPath });
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GeminiClient } = require('./gemini-client'); // @google/genai sarmalayıcısı (Faz 14)
 const { PDFDocument } = require('pdf-lib');
 const { splitPdf } = require('./pdf-helper');
 const db = require('./database');
@@ -50,6 +50,8 @@ const FormatFingerprint = require('./js/format-fingerprint');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// Tek sürüm kaynağı: package.json (arayüz web/version.js ile aynı değeri alır)
+const APP_VERSION = (() => { try { return require('./package.json').version; } catch (e) { return '0.0.0'; } })();
 
 // ─── Multer: Dosya yükleme (bellek içi) ────────────────────
 const upload = multer({
@@ -192,7 +194,7 @@ function upsertEnv(text, updates) {
 // Her Gemini çağrısına istek zaman aşımı: asılı kalan bir çağrı işçiyi ve
 // HTTP isteğini sonsuza dek tutmasın (SDK requestOptions.timeout, ms).
 const GEMINI_REQ_OPTS = { timeout: Math.max(30000, parseInt(process.env.GEMINI_TIMEOUT_MS) || 180000) };
-const gemModel = (params) => genAI.getGenerativeModel(params, GEMINI_REQ_OPTS);
+const gemModel = (params) => genAI.getGenerativeModel(params);
 
 function initGemini() {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -205,7 +207,7 @@ function initGemini() {
         return false;
     }
     try {
-        genAI = new GoogleGenerativeAI(apiKey);
+        genAI = new GeminiClient(apiKey, GEMINI_REQ_OPTS);
         console.log(`[OK] Gemini baglantisi kuruldu (model: ${MODEL_NAME})`);
         return true;
     } catch (err) {
@@ -1159,7 +1161,7 @@ app.get('/api/health', (req, res) => {
         geminiReady: !!genAI,
         model: MODEL_NAME,
         timestamp: new Date().toISOString(),
-        version: '3.2.0-hybrid'
+        version: APP_VERSION
     });
 });
 
@@ -1258,7 +1260,7 @@ app.post('/api/settings/test', requireAdmin, async (req, res) => {
     if (!key || key === 'YOUR_API_KEY_HERE') return res.json({ success: false, error: 'API anahtarı tanımlı değil.' });
     const t0 = Date.now();
     try {
-        const client = new GoogleGenerativeAI(key);
+        const client = new GeminiClient(key, { timeout: 15000 });
         const model = client.getGenerativeModel({ model: modelName, generationConfig: { maxOutputTokens: 4, temperature: 0 } });
         const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Zaman aşımı (15 sn) — ağ/proxy erişimini kontrol edin.')), 15000));
         await Promise.race([model.generateContent('ping'), timeout]);
@@ -1335,6 +1337,30 @@ async function runRetentionPurge(trigger, who) {
     }
     return { skipped: false, days, ...r };
 }
+// ─── Yedekleme (Faz 14) ──────────────────────────────────────
+// userData/backups/<zaman damgası>/ altına tutarlı DB anlık görüntüsü (VACUUM INTO)
+// + denetim imza anahtarı + zincir başı kopyalanır. .env (API anahtarı) kopyalanmaz.
+// Elle (admin) veya günlük otomatik; son BACKUP_KEEP (varsayılan 7) yedek tutulur.
+const BACKUP_KEEP = Math.max(1, parseInt(process.env.BACKUP_KEEP) || 7);
+async function runBackup(trigger, who) {
+    const r = await db.backupTo(BACKUP_KEEP);
+    console.log(`[YEDEK] ${trigger}: ${r.dir} (${(r.bytes / 1024).toFixed(0)} KB, ${r.files.length} dosya, ${r.pruned} eski yedek silindi)`);
+    await db.addAuditEntry({
+        type: 'maintenance', action: 'Yedek alındı',
+        details: `${path.basename(r.dir)} · ${r.files.join(', ')} · ${(r.bytes / 1024).toFixed(0)} KB (${trigger})`,
+        user: who || 'Sistem', tags: ['yedek', trigger]
+    }).catch(() => {});
+    return r;
+}
+app.post('/api/maintenance/backup', requireAdmin, async (req, res) => {
+    try { res.json({ success: true, ...(await runBackup('elle', actor(req))) }); }
+    catch (err) { console.error('[HATA] Yedekleme:', err.message); res.status(500).json({ success: false, error: 'Yedek alınamadı: ' + err.message }); }
+});
+app.get('/api/maintenance/backups', requireAdmin, async (req, res) => {
+    try { res.json({ success: true, ...db.listBackups() }); }
+    catch (err) { res.status(500).json({ success: false, error: 'Yedek listesi alınamadı.' }); }
+});
+
 app.post('/api/maintenance/purge', requireAdmin, async (req, res) => {
     try { res.json({ success: true, ...(await runRetentionPurge('elle', actor(req))) }); }
     catch (err) { res.status(500).json({ success: false, error: 'Temizlik başarısız.' }); }
@@ -1553,7 +1579,7 @@ function start() {
     const server = app.listen(PORT, HOST, () => {
         resolveReady(Number(PORT));
         console.log('\n' + '='.repeat(60));
-        console.log('  ColdChain AI Server v3.2.0-hybrid (Smart Chunking + SQLite)');
+        console.log(`  ColdChain AI Server v${APP_VERSION} (Smart Chunking + SQLite)`);
         console.log('='.repeat(60));
         console.log(`  > Adres: http://localhost:${PORT}`);
         console.log(`  > Gemini: ${geminiReady ? '[ HAZIR ]' : '[ API ANAHTARI EKSIK ]'}`);
@@ -1569,6 +1595,12 @@ function start() {
         const purge = (trigger) => runRetentionPurge(trigger).catch(e => console.error('[HATA] Saklama temizliği:', e.message));
         setTimeout(() => purge('açılış'), 20000).unref();
         setInterval(() => purge('günlük'), 24 * 60 * 60 * 1000).unref();
+        // Günlük otomatik yedek (temizlikten sonra, BACKUP_AUTO=0 ile kapatılır)
+        if (process.env.BACKUP_AUTO !== '0') {
+            const backup = (trigger) => runBackup(trigger).catch(e => console.error('[HATA] Otomatik yedek:', e.message));
+            setTimeout(() => backup('açılış'), 40000).unref();
+            setInterval(() => backup('günlük'), 24 * 60 * 60 * 1000).unref();
+        }
     });
 
     // Port doluysa sessizce ölme: büyük ihtimalle uygulamanın başka bir kopyası

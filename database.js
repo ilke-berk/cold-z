@@ -319,6 +319,55 @@ function saveAnalysis(data) {
     });
 }
 
+// ─── YEDEKLEME (Faz 14) ─────────────────────────────────────
+const backupsRoot = path.join(userDataPath, 'backups');
+/**
+ * Tutarlı anlık görüntü: SQLite VACUUM INTO (yazma sırasında bile bütün kopya),
+ * yanına audit.key + audit.head.json. .env kopyalanmaz. Eski yedekler budanır.
+ */
+function backupTo(keep = 7) {
+    return new Promise((resolve, reject) => {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const dir = path.join(backupsRoot, stamp);
+        fs.mkdirSync(dir, { recursive: true });
+        const dest = path.join(dir, 'coldchain.db');
+        // VACUUM INTO tek tırnaklı yol ister; ters bölü Windows'ta sorun değil, tırnak kaçırılır
+        db.run(`VACUUM INTO '${dest.replace(/'/g, "''")}'`, (err) => {
+            if (err) return reject(err);
+            const files = ['coldchain.db'];
+            for (const extra of ['audit.key', 'audit.head.json']) {
+                const src = path.join(userDataPath, extra);
+                if (fs.existsSync(src)) { fs.copyFileSync(src, path.join(dir, extra)); files.push(extra); }
+            }
+            fs.writeFileSync(path.join(dir, 'MANIFEST.json'), JSON.stringify({ createdAt: new Date().toISOString(), files, dbPath, note: 'Geri yüklemek için uygulamayı kapatın, coldchain.db + audit.key + audit.head.json dosyalarını userData klasörüne kopyalayın.' }, null, 2) + '\n');
+            let bytes = 0;
+            for (const f of files) { try { bytes += fs.statSync(path.join(dir, f)).size; } catch (e) {} }
+            // Budama: en yeni `keep` yedek kalsın
+            let pruned = 0;
+            try {
+                const all = fs.readdirSync(backupsRoot).filter(n => /^\d{4}-\d{2}-\d{2}T/.test(n)).sort();
+                for (const old of all.slice(0, Math.max(0, all.length - keep))) {
+                    fs.rmSync(path.join(backupsRoot, old), { recursive: true, force: true });
+                    pruned++;
+                }
+            } catch (e) { /* budama hatası yedeği geçersiz kılmaz */ }
+            resolve({ dir, files, bytes, pruned });
+        });
+    });
+}
+function listBackups() {
+    let items = [];
+    try {
+        items = fs.readdirSync(backupsRoot).filter(n => /^\d{4}-\d{2}-\d{2}T/.test(n)).sort().reverse().map(n => {
+            const dir = path.join(backupsRoot, n);
+            let bytes = 0;
+            try { for (const f of fs.readdirSync(dir)) bytes += fs.statSync(path.join(dir, f)).size; } catch (e) {}
+            return { name: n, dir, bytes };
+        });
+    } catch (e) { /* klasör yok */ }
+    return { root: backupsRoot, items };
+}
+
 function getRecentAnalyses(limit = 10) {
     return new Promise((resolve, reject) => {
         const sql = `SELECT * FROM analyses ORDER BY created_at DESC LIMIT ?`;
@@ -717,5 +766,7 @@ module.exports = {
     getAnalysisById,
     deleteAnalysis,
     purgeOlderThan,
-    retentionCutoffISO
+    retentionCutoffISO,
+    backupTo,
+    listBackups
 };

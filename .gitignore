@@ -48,3 +48,6 @@ web/
 # Denetim zinciri imza anahtari + zincir basi (userData; gelistirmede proje koku)
 audit.key
 audit.head.json
+
+# Yedekler (userData; gelistirmede proje koku)
+backups/

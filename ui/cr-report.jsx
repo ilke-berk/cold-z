@@ -364,7 +364,7 @@
           <div className="rp-sig">
             <div>
               <div className="rp-sigT">SİSTEM REFERANSI</div>
-              <div className="rp-sigSub" style={{ marginTop: 8 }}>ColdChain AI v2.1 Verification Service<br />Belge ID: {docId(S)}</div>
+              <div className="rp-sigSub" style={{ marginTop: 8 }}>ColdChain AI v{window.CC_VERSION || "?"} Verification Service<br />Belge ID: {docId(S)}</div>
             </div>
             <div>
               <div className="rp-sigT">KALİTE GÜVENCE MÜDÜRÜ ONAYI</div>
