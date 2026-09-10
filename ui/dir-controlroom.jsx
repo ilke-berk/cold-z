@@ -299,7 +299,21 @@
   function CRDashboard({ theme, onNav = () => {} }) {
     const [sel, setSel] = useState(null);
     const [live, setLive] = useState(null); // {analyses, stats} — DB'den
+    const [reloadKey, setReloadKey] = useState(0);
+    const [armedDel, setArmedDel] = useState(null); // iki aşamalı silme (KVKK, yalnızca admin)
+    const [delMsg, setDelMsg] = useState(null);
     const d = CCData;
+    const isAdmin = ((window.CCAuth && window.CCAuth.user) || {}).role === 'admin';
+    const delAnalysis = async (a) => {
+      setDelMsg(null);
+      try {
+        const r = await fetch('/api/analyses/' + a.id, { method: 'DELETE' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.error || 'Silinemedi.');
+        setArmedDel(null); setSel(null); setDelMsg({ ok: true, text: `#${a.id} silindi (${a.pharmacy} · ${a.drug}). Denetim izine yazıldı.` });
+        setReloadKey(k => k + 1);
+      } catch (e) { setDelMsg({ ok: false, text: e.message }); }
+    };
 
     useEffect(() => {
       let alive = true;
@@ -309,7 +323,7 @@
       ]).then(([ra, st]) => {
         if (!alive) return;
         const rows = ra && ra.success && Array.isArray(ra.data) ? ra.data : [];
-        if (!rows.length) return; // DB boş → demo kalır
+        if (!rows.length) { if (reloadKey > 0) setLive({ analyses: [], stats: (st && st.success && st.data) || {} }); return; } // ilk yükte DB boş → demo kalır; silme sonrası boş liste
         const analyses = rows.map(r => {
           let reasons = [];
           try { reasons = JSON.parse(r.reasons || '[]'); } catch (e) {}
@@ -325,7 +339,7 @@
         setLive({ analyses, stats: sd });
       });
       return () => { alive = false; };
-    }, []);
+    }, [reloadKey]);
 
     const isLive = !!live;
     const analyses = isLive ? live.analyses : d.analyses;
@@ -410,11 +424,12 @@
         </div>
         <div className="cr-pn">
           <div className="cr-ph"><div className="cr-pt">İADE KAYIT AKIŞI{isLive && <span className="cr-chip" style={{ marginLeft: 8, color: 'var(--ok)', background: 'var(--okS)', borderColor: 'var(--ok)' }}>CANLI</span>}</div><div className="cr-phr">{!isLive && <span className="cr-phbd">placeholder</span>}<span className="cr-up" style={{ color: 'var(--t3)' }}>SON {analyses.length} KAYIT</span></div></div>
+          {delMsg && <div style={{ margin: '10px 14px 0', padding: '8px 12px', borderRadius: 8, fontSize: 12, border: '1px solid ' + (delMsg.ok ? 'var(--ok)' : 'var(--bad)'), color: delMsg.ok ? 'var(--ok)' : 'var(--bad)' }}>{delMsg.text}</div>}
           <table className="cr-t">
-            <thead><tr>{['Zaman', 'Eczane', 'İlaç', 'Seri', 'MKT', 'TOR', 'Karar'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Zaman', 'Eczane', 'İlaç', 'Seri', 'MKT', 'TOR', 'Karar'].concat(isLive && isAdmin ? [''] : []).map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
             <tbody>
               {analyses.length === 0 ? (
-                <tr><td colSpan={7} style={{ textAlign: 'center', padding: '34px 0', color: 'var(--t2)' }}>Henüz kayıt yok — ilk analizi oluşturup kaydedin.</td></tr>
+                <tr><td colSpan={8} style={{ textAlign: 'center', padding: '34px 0', color: 'var(--t2)' }}>Henüz kayıt yok — ilk analizi oluşturup kaydedin.</td></tr>
               ) : analyses.map(a => { const ok = a.mkt >= 2 && a.mkt <= 8; return (
                 <tr key={a.id} onClick={() => setSel(a)}>
                   <td className="cr-m" style={{ color: 'var(--t2)' }}>{CCFmt.fmtTime(a.ts)}</td>
@@ -424,6 +439,18 @@
                   <td className="cr-m" style={{ fontWeight: 600, color: ok ? 'var(--ok)' : 'var(--bad)' }}>{a.mkt.toFixed(2)}°</td>
                   <td className="cr-m" style={{ color: a.tor != null && a.tor > 180 ? 'var(--bad)' : 'var(--t2)' }}>{a.tor != null ? a.tor : '—'}</td>
                   <td><Badge decision={a.decision} /></td>
+                  {isLive && isAdmin && (
+                    <td onClick={e => e.stopPropagation()} style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
+                      {armedDel === a.id ? (
+                        <span style={{ display: 'inline-flex', gap: 6 }}>
+                          <button className="cr-btn" style={{ padding: '4px 10px', fontSize: 11, background: 'var(--bad)', color: '#fff' }} onClick={() => delAnalysis(a)} title="KVKK: kayıt, ham seri ve cihaz seri kaydı silinir; denetim izine yazılır">Sil (onayla)</button>
+                          <button className="cr-btn cr-btn2" style={{ padding: '4px 10px', fontSize: 11 }} onClick={() => setArmedDel(null)}>Vazgeç</button>
+                        </span>
+                      ) : (
+                        <button className="cr-btn cr-btn2" style={{ padding: '4px 10px', fontSize: 11, color: 'var(--t3)' }} onClick={() => setArmedDel(a.id)} title="Kaydı sil (KVKK)"><Ic.x size={13} /></button>
+                      )}
+                    </td>
+                  )}
                 </tr>); })}
             </tbody>
           </table>

@@ -156,7 +156,72 @@ function initDB() {
             )
         `, (err) => {
             if (err) console.error('[HATA] users tablo olusturma hatasi:', err.message);
-            else console.log('[OK] users tablosu hazir.');
+            else {
+                console.log('[OK] users tablosu hazir.');
+                // Migrasyon (Faz 13): KVKK bildirimi onay zamani. Kolon varsa hata yutulur.
+                db.run(`ALTER TABLE users ADD COLUMN kvkk_ack_at DATETIME`, (aErr) => {
+                    if (!aErr) console.log('[OK] users.kvkk_ack_at kolonu eklendi (migrasyon).');
+                });
+            }
+        });
+    });
+}
+
+// ─── KVKK: silme ve saklama suresi (Faz 13) ─────────────────
+function setKvkkAck(userId) {
+    return new Promise((resolve, reject) => {
+        db.run(`UPDATE users SET kvkk_ack_at = CURRENT_TIMESTAMP WHERE id = ?`, [userId], (err) => err ? reject(err) : resolve());
+    });
+}
+function getAnalysisById(id) {
+    return new Promise((resolve, reject) => {
+        db.get(`SELECT id, pharmacy_name, drug_name, batch_number, device_serial, decision, created_at FROM analyses WHERE id = ?`, [id], (err, row) => err ? reject(err) : resolve(row || null));
+    });
+}
+/** Bir analizi ve ona bagli ham seriyi + cihaz seri kaydini siler (denetim izi KALIR). */
+function deleteAnalysis(id) {
+    return new Promise((resolve, reject) => {
+        getAnalysisById(id).then(row => {
+            if (!row) return resolve(null);
+            db.serialize(() => {
+                db.run(`DELETE FROM analysis_readings WHERE analysis_id = ?`, [id]);
+                db.run(`DELETE FROM device_serials WHERE analysis_id = ?`, [id]);
+                db.run(`DELETE FROM analyses WHERE id = ?`, [id], (err) => err ? reject(err) : resolve(row));
+            });
+        }).catch(reject);
+    });
+}
+/** Saklama suresi kesim tarihi (ISO). days <= 0 → null (sinirsiz). Saf, testlenir. */
+function retentionCutoffISO(days, now = Date.now()) {
+    const d = Number(days);
+    if (!isFinite(d) || d <= 0) return null;
+    return new Date(now - d * 86400000).toISOString();
+}
+/**
+ * Saklama suresini asan analizleri, ham serileri ve cihaz seri kayitlarini siler.
+ * created_at SQLite'ta 'YYYY-MM-DD HH:MM:SS' (UTC) veya ISO; ikisi de ISO kesimle
+ * metinsel karsilastirilabilir (ilk 19 karakter ayni bicim).
+ */
+function purgeOlderThan(days) {
+    return new Promise((resolve, reject) => {
+        const cutoff = retentionCutoffISO(days);
+        if (!cutoff) return resolve({ cutoff: null, analyses: 0, readings: 0, deviceSerials: 0 });
+        const cut = cutoff.replace('T', ' ').slice(0, 19);
+        const out = { cutoff, analyses: 0, readings: 0, deviceSerials: 0 };
+        db.serialize(() => {
+            db.run(`DELETE FROM analysis_readings WHERE analysis_id IN (SELECT id FROM analyses WHERE substr(replace(created_at,'T',' '),1,19) < ?)`, [cut], function (e1) {
+                if (e1) return reject(e1);
+                out.readings = this.changes;
+                db.run(`DELETE FROM device_serials WHERE substr(replace(created_at,'T',' '),1,19) < ?`, [cut], function (e2) {
+                    if (e2) return reject(e2);
+                    out.deviceSerials = this.changes;
+                    db.run(`DELETE FROM analyses WHERE substr(replace(created_at,'T',' '),1,19) < ?`, [cut], function (e3) {
+                        if (e3) return reject(e3);
+                        out.analyses = this.changes;
+                        resolve(out);
+                    });
+                });
+            });
         });
     });
 }
@@ -647,5 +712,10 @@ module.exports = {
     listUsers,
     createUser,
     updateUser,
-    touchLogin
+    touchLogin,
+    setKvkkAck,
+    getAnalysisById,
+    deleteAnalysis,
+    purgeOlderThan,
+    retentionCutoffISO
 };

@@ -109,7 +109,7 @@ const PUBLIC_API = new Set(['/api/health', '/api/auth/status', '/api/auth/setup'
 
 function publicUser(u) {
     if (!u) return null;
-    return { id: u.id, email: u.email, name: u.name || '', role: u.role, mustChangePassword: !!u.must_change, lastLoginAt: u.last_login_at || null };
+    return { id: u.id, email: u.email, name: u.name || '', role: u.role, mustChangePassword: !!u.must_change, lastLoginAt: u.last_login_at || null, kvkkAckAt: u.kvkk_ack_at || null };
 }
 
 /**
@@ -222,6 +222,17 @@ function createAuth({ db, audit = async () => {}, isLoopback = () => true }) {
                 await audit({ type: 'auth', action: 'Şifre değiştirildi', details: req.user.email, user: req.user.email, tags: ['auth', 'password'] });
                 res.json({ success: true });
             } catch (e) { res.status(500).json({ success: false, error: 'Şifre değiştirilemedi.' }); }
+        });
+
+        // KVKK bildirimi onayı (Faz 13): kullanıcı başına bir kez, zaman damgalı, denetim izinde
+        app.post('/api/auth/kvkk-ack', async (req, res) => {
+            try {
+                if (typeof db.setKvkkAck !== 'function') return res.status(501).json({ success: false, error: 'Desteklenmiyor.' });
+                await db.setKvkkAck(req.user.id);
+                const u = await db.getUserById(req.user.id);
+                await audit({ type: 'auth', action: 'KVKK bildirimi onaylandı', details: `${req.user.email} — belge görüntülerinin OCR için Google Gemini'ye gönderilmesi ve yerel saklama koşulları`, user: req.user.email, tags: ['auth', 'kvkk'] });
+                res.json({ success: true, user: publicUser(u) });
+            } catch (e) { res.status(500).json({ success: false, error: 'Onay kaydedilemedi.' }); }
         });
 
         // ── Kullanıcı yönetimi (admin)

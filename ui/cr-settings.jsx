@@ -176,6 +176,8 @@
     const [priceIn, setPriceIn] = useState('');
     const [priceOut, setPriceOut] = useState('');
     const [conc, setConc] = useState(2);
+    const [retention, setRetention] = useState('0');   // gün; 0 = sınırsız (KVKK saklama süresi)
+    const [purging, setPurging] = useState(false);
     const [msg, setMsg] = useState(null);             // {tone, text}
     const [busy, setBusy] = useState(false);
     const [testing, setTesting] = useState(false);
@@ -187,6 +189,7 @@
       setPriceIn(st.priceInOverride ? String(st.priceIn) : '');
       setPriceOut(st.priceOutOverride ? String(st.priceOut) : '');
       setConc(st.extractConcurrency || 2);
+      setRetention(String(st.retentionDays || 0));
       setApiKey('');
     };
     const loadServer = async () => {
@@ -196,7 +199,7 @@
     useEffect(() => { loadServer(); }, []);
 
     const serverDirty = !!srv && (
-      apiKey.trim() !== '' || model !== srv.model || conc !== srv.extractConcurrency ||
+      apiKey.trim() !== '' || model !== srv.model || conc !== srv.extractConcurrency || String(retention) !== String(srv.retentionDays || 0) ||
       String(usdTry) !== String(srv.usdTry) ||
       priceIn !== (srv.priceInOverride ? String(srv.priceIn) : '') ||
       priceOut !== (srv.priceOutOverride ? String(srv.priceOut) : '')
@@ -225,6 +228,7 @@
           if (priceIn !== (srv.priceInOverride ? String(srv.priceIn) : '')) body.priceIn = priceIn === '' ? null : Number(priceIn);
           if (priceOut !== (srv.priceOutOverride ? String(srv.priceOut) : '')) body.priceOut = priceOut === '' ? null : Number(priceOut);
           if (conc !== srv.extractConcurrency) body.extractConcurrency = conc;
+          if (String(retention) !== String(srv.retentionDays || 0)) body.retentionDays = Number(retention) || 0;
           const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
           const j = await r.json();
           if (!j.success) throw new Error(j.error || 'Sunucu ayarları kaydedilemedi.');
@@ -335,7 +339,18 @@
             <div className="cr-ph"><div className="cr-pt"><Ic.lock size={15} style={{ color: 'var(--sig)' }} /> VERİ BÜTÜNLÜĞÜ & GÜVENLİK</div></div>
             <div className="set-bd">
               <Field label="Denetim Zinciri Durumu"><ChainStatus chain={chain} /></Field>
-              <Field label="Hash Algoritması"><input className="cr-input" value="SHA-256 (hash chain)" readOnly style={{ color: 'var(--t3)' }} /></Field>
+              <Field label="İmza" hint={chain && chain.success && chain.signing ? chain.signing + (chain.legacyCount ? ` · ${chain.legacyCount} eski (imzasız) satır` : '') : ''}><input className="cr-input" value="HMAC-SHA256 hash zinciri" readOnly style={{ color: 'var(--t3)' }} /></Field>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'end' }}>
+                <Field label="KVKK Veri Saklama Süresi (gün, 0 = sınırsız)" hint="Süreyi aşan analizler, ham seriler ve cihaz seri kayıtları her gün otomatik silinir; denetim izi silinmez">
+                  <input className="cr-input" type="number" min="0" step="1" value={retention} onChange={e => setRetention(e.target.value)} disabled={!srv} />
+                </Field>
+                <button className="cr-btn cr-btn2" style={{ marginBottom: 18 }} disabled={purging || !srv || !(Number(srv && srv.retentionDays) > 0)} title={srv && !(Number(srv.retentionDays) > 0) ? 'Önce bir saklama süresi kaydedin' : ''} onClick={async () => {
+                  setPurging(true); setMsg(null);
+                  try { const j = await api('/api/maintenance/purge', {}); setMsg({ tone: 'ok', text: j.skipped ? 'Saklama süresi sınırsız; temizlik yapılmadı.' : `Temizlik tamam: ${j.analyses} analiz, ${j.readings} ham seri, ${j.deviceSerials} cihaz kaydı silindi (> ${j.days} gün).` }); }
+                  catch (e) { setMsg({ tone: 'bad', text: e.message }); }
+                  setPurging(false);
+                }}><Ic.refresh size={14} /> {purging ? 'Temizleniyor…' : 'Şimdi temizle'}</button>
+              </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <button className="cr-btn cr-btn2" style={{ justifyContent: 'center' }} onClick={verifyChain}><Ic.shield size={15} /> Zinciri doğrula</button>
                 <button className="cr-btn cr-btn2" style={{ justifyContent: 'center' }} onClick={() => onNav('audit')}><Ic.report size={15} /> Denetim izini aç</button>

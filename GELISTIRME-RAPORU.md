@@ -364,3 +364,18 @@ Arayüz "21 CFR Part 11 / FDA / SHA-256 denetim zinciri" rozetleri taşıyor ama
 - Belge görüntülerinde eczane adı/seri maskelenmez (piksel düzeyinde pratik değil; OCR değeri olan alanlar). Karşı önlem açıklama + rızadır: Veri Yükleme'ye tek seferlik KVKK bildirimi ve analiz silme/saklama süresi (purge) sıradaki iş.
 - Oturumlar bellek içi; çok süreçli/yeniden başlayan kurulumda kalıcı oturum gerekir.
 - Testler: `tests/auth.test.js` (scrypt, çerez, oturum ömrü, kilit, uçtan uca kurulum→giriş→rol→çıkış sahte DB ile) — **319/319**. Tarayıcıda: ilk kurulum, yanlış şifre, giriş, kullanıcı ekleme, zincir doğrulaması (5 imzalı + 12 eski satır, baş eşleşiyor), 401 → giriş ekranı; CSP ihlali yok.
+
+## 13. KVKK: Bildirim, Silme ve Saklama Süresi (Faz 13 — 10.09.2026)
+
+Belge görüntülerinde eczane adı/cihaz serisi piksel düzeyinde maskelenemez (OCR'ın okuması gereken alanlar). KVKK'nın gerçek karşılığı: **açıklama + onay + silme hakkı + saklama süresi**. Bu fazda üçü de uygulandı.
+
+- **Tek seferlik KVKK bildirimi** (`ui/cr-upload.jsx`): Veri Yükleme'de, kullanıcı başına bir kez. Ne yerelde tutulur, hangi durumda belge görüntüsü Google Gemini'ye gider (yalnızca taranmış PDF/fotoğraf ve tanınmayan PDF formatı), nasıl silinir/ne kadar saklanır. Onaylanmadan "ANALİZİ BAŞLAT" kilitli ("KVKK ONAYI GEREKLİ"). Onay `users.kvkk_ack_at`'e zaman damgasıyla yazılır (`POST /api/auth/kvkk-ack`) ve denetim zincirine düşer.
+- **Analiz silme** (`DELETE /api/analyses/:id`, admin): analiz + ham seri + cihaz seri kaydı silinir; denetim izine kim/ne/ne zaman yazılır (silinen kaydın özeti). Kontrol Paneli'nde admin için satır başına iki aşamalı sil düğmesi.
+- **Saklama süresi** (`RETENTION_DAYS`, Ayarlar › Veri Bütünlüğü; 0 = sınırsız): süreyi aşan analizler, ham seriler ve cihaz seri kayıtları açılıştan 20 sn sonra ve her 24 saatte bir otomatik silinir (`runRetentionPurge`); "Şimdi temizle" düğmesi (`POST /api/maintenance/purge`, admin). Her temizlik denetim zincirine yazılır. **Denetim izi silinmez** — yasal izlenebilirlik.
+- Ayarlar'daki imza alanı gerçek değeri gösterir (HMAC-SHA256 + eski satır sayısı).
+
+Testler: `retentionCutoffISO` (**320/320**). Tarayıcıda: bildirim → onay → `kvkkAckAt` doldu, bildirim kalktı; kayıt oluştur → sil → ham seri 404, ikinci silme 404, denetim kaydı; saklama 3650 gün → temizlik 0 kayıt → sınırsıza dön (`.env` eski hâline döndü); panelde admin sil sütunu.
+
+### Kalan
+- Purge ve silme SQL'i CI'da test edilmiyor (sqlite3 `--ignore-scripts` ile kurulmuyor); yalnızca yerelde uçtan uca doğrulandı.
+- Denetim izinde eczane adı/ilaç adı metin olarak kalır (silinen kaydın özeti). Bu bilinçli: silme işleminin kendisi izlenebilir olmalı.

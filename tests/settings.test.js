@@ -35,6 +35,18 @@ describe('upsertEnv — .env birleştirme (Ayarlar ekranı)', () => {
     });
 });
 
+describe('retentionCutoffISO — KVKK saklama süresi kesimi (Faz 13)', () => {
+    const { retentionCutoffISO } = require('../database.js');
+    test('0 / geçersiz → null (sınırsız); N gün → N gün öncesi ISO', () => {
+        assert.equal(retentionCutoffISO(0), null);
+        assert.equal(retentionCutoffISO('abc'), null);
+        assert.equal(retentionCutoffISO(-3), null);
+        const now = Date.UTC(2026, 8, 10, 12, 0, 0);
+        assert.equal(retentionCutoffISO(30, now), '2026-08-11T12:00:00.000Z');
+        assert.equal(retentionCutoffISO('1', now), '2026-09-09T12:00:00.000Z');
+    });
+});
+
 describe('CCSettings — yerel analiz ayarları', () => {
     const store = {};
     const { CCSettings } = (() => {

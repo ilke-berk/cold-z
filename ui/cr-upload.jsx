@@ -586,12 +586,46 @@
     const acList = form.drug ? FORMULARY.filter(d => d.toUpperCase().includes(form.drug.toUpperCase())).slice(0, 8) : [];
     const PIPE_TOTAL = 6;
 
+    // KVKK bildirimi (Faz 13): kullanıcı başına bir kez; onaylanmadan analiz başlatılamaz.
+    const [kvkkAck, setKvkkAck] = useState(() => !!(((window.CCAuth || {}).user || {}).kvkkAckAt));
+    const [kvkkBusy, setKvkkBusy] = useState(false);
+    const ackKvkk = async () => {
+      setKvkkBusy(true);
+      try {
+        const r = await fetch('/api/auth/kvkk-ack', { method: 'POST' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.error || 'Onay kaydedilemedi.');
+        if (window.CCAuth) window.CCAuth.user = j.user;
+        setKvkkAck(true);
+      } catch (e) { setError(e.message); }
+      setKvkkBusy(false);
+    };
+
     return (
       <CRShell theme={theme} active="upload" onNav={onNav}>
         <div className="cr-hr">
           <div><div className="cr-h1">Veri Yükleme</div><div className="cr-h1sub">Adım {step} / 3 · {STEPS[step - 1].lbl}</div></div>
           <button className="cr-btn cr-btn2" onClick={() => onNav('dashboard')}><Ic.chevL size={15} /> KONTROL PANELİ</button>
         </div>
+        {!kvkkAck && (
+          <div className="cr-pn" data-testid="kvkk-notice" style={{ padding: '14px 16px', marginBottom: 14, borderColor: 'var(--sig)', fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <Ic.lock size={16} style={{ color: 'var(--sig)', flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1 }}>
+                <b style={{ color: 'var(--tx)' }}>KVKK bildirimi — analiz başlatmadan önce bir kez onaylanır.</b>
+                <ul style={{ margin: '8px 0 0 16px', padding: 0 }}>
+                  <li><b>Yerel saklama:</b> Analiz özeti, ham sıcaklık serisi, cihaz seri numarası, eczane/ilaç bilgileri ve denetim izi bu bilgisayardaki veritabanında tutulur; başka bir sunucuya gönderilmez.</li>
+                  <li><b>Yapay zeka:</b> Yalnızca taranmış PDF / fotoğraf ve tanınmayan yeni PDF formatlarında, belgenin <u>görüntüsü</u> OCR için Google Gemini API'ye iletilir. Görüntüde eczane adı, cihaz serisi gibi bilgiler bulunabilir; Excel/CSV ve öğrenilmiş şablonlar için hiçbir veri dışarı çıkmaz.</li>
+                  <li><b>Saklama ve silme:</b> Yönetici saklama süresi tanımlayabilir (Ayarlar); süreyi aşan kayıtlar otomatik silinir. Her kayıt Kontrol Paneli'nden tek tek silinebilir. Denetim izi (kim, ne zaman, ne yaptı) yasal izlenebilirlik için silinmez.</li>
+                </ul>
+                <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <button className="cr-btn" disabled={kvkkBusy} onClick={ackKvkk}><Ic.check size={14} /> {kvkkBusy ? 'Kaydediliyor…' : 'Okudum, onaylıyorum'}</button>
+                  <span style={{ fontSize: 11, color: 'var(--t3)' }}>Onay, kullanıcı hesabınıza zaman damgasıyla ve denetim izine yazılır.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {ai && !ai.geminiReady && (
           <div className="cr-pn" data-testid="ai-offline" style={{ padding: '12px 16px', marginBottom: 14, borderColor: 'var(--amber)', fontSize: 12.5, display: 'flex', gap: 10, alignItems: 'flex-start', color: 'var(--t2)' }}>
             <Ic.alert size={16} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
@@ -1091,9 +1125,9 @@
             // Zorunlu onay kapısı: bekleyen inceleme varken analiz başlatılamaz.
             const pendingReview = review ? review.filter(r => !approvals[r.id]).length : 0;
             return (
-              <button className="cr-btn" onClick={() => runAnalysis()} disabled={running || !files.length || pendingReview > 0} style={{ opacity: running || pendingReview > 0 ? .7 : 1 }}>
-                {running ? <span className="up-spin" /> : pendingReview > 0 ? <Ic.alert size={15} sw={2.2} /> : <Ic.activity size={15} sw={2.2} />}
-                {running ? 'ANALİZ EDİLİYOR…' : pendingReview > 0 ? `ONAY BEKLENİYOR (${pendingReview})` : 'ANALİZİ BAŞLAT'}
+              <button className="cr-btn" onClick={() => runAnalysis()} disabled={running || !files.length || pendingReview > 0 || !kvkkAck} title={!kvkkAck ? 'Önce KVKK bildirimini onaylayın (sayfanın üstünde)' : ''} style={{ opacity: running || pendingReview > 0 || !kvkkAck ? .7 : 1 }}>
+                {running ? <span className="up-spin" /> : pendingReview > 0 || !kvkkAck ? <Ic.alert size={15} sw={2.2} /> : <Ic.activity size={15} sw={2.2} />}
+                {running ? 'ANALİZ EDİLİYOR…' : !kvkkAck ? 'KVKK ONAYI GEREKLİ' : pendingReview > 0 ? `ONAY BEKLENİYOR (${pendingReview})` : 'ANALİZİ BAŞLAT'}
               </button>
             );
           })()}

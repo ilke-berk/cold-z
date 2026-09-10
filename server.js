@@ -1167,7 +1167,8 @@ app.get('/api/health', (req, res) => {
 // Ayarlar ekranı API anahtarını, modeli ve fiyat/kur değerlerini buradan
 // okur/yazar. Anahtar hiçbir zaman düz metin döndürülmez (maskeli son 4 hane).
 // Yazma yalnızca yerel makineden (loopback) ve admin rolüyle kabul edilir.
-const SETTINGS_KEYS = { apiKey: 'GEMINI_API_KEY', model: 'GEMINI_MODEL', priceIn: 'PRICE_INPUT_PER_M', priceOut: 'PRICE_OUTPUT_PER_M', usdTry: 'USD_TRY_RATE', extractConcurrency: 'EXTRACT_CONCURRENCY' };
+const SETTINGS_KEYS = { apiKey: 'GEMINI_API_KEY', model: 'GEMINI_MODEL', priceIn: 'PRICE_INPUT_PER_M', priceOut: 'PRICE_OUTPUT_PER_M', usdTry: 'USD_TRY_RATE', extractConcurrency: 'EXTRACT_CONCURRENCY', retentionDays: 'RETENTION_DAYS' };
+const retentionDays = () => Math.max(0, parseInt(process.env.RETENTION_DAYS) || 0); // 0 = sınırsız
 
 function currentSettings() {
     return {
@@ -1183,6 +1184,7 @@ function currentSettings() {
         priceOutOverride: !!parseFloat(process.env.PRICE_OUTPUT_PER_M),
         usdTry: USD_TRY,
         extractConcurrency: Math.max(1, Math.min(parseInt(process.env.EXTRACT_CONCURRENCY) || 2, 4)),
+        retentionDays: retentionDays(),
         envPath,
         port: Number(PORT),
     };
@@ -1220,6 +1222,7 @@ app.post('/api/settings', requireAdmin, (req, res) => {
     num('priceOut', SETTINGS_KEYS.priceOut, 0, 1000);
     num('usdTry', SETTINGS_KEYS.usdTry, 0.01, 10000);
     num('extractConcurrency', SETTINGS_KEYS.extractConcurrency, 1, 4);
+    num('retentionDays', SETTINGS_KEYS.retentionDays, 0, 36500);
 
     if (errors.length) return res.status(400).json({ success: false, error: errors.join(' ') });
     if (!Object.keys(updates).length) return res.json({ success: true, changed: [], settings: currentSettings() });
@@ -1296,6 +1299,45 @@ app.post('/api/save-analysis', async (req, res) => {
         console.error('[HATA] Kayit hatasi:', err.message);
         res.status(500).json({ success: false, error: 'Kayıt başarısız oldu.' });
     }
+});
+
+// ─── KVKK: analiz silme + saklama süresi temizliği (Faz 13) ──
+app.delete('/api/analyses/:id', requireAdmin, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        if (isNaN(id)) return res.status(400).json({ success: false, error: 'Geçersiz id.' });
+        const row = await db.deleteAnalysis(id);
+        if (!row) return res.status(404).json({ success: false, error: 'Analiz bulunamadı.' });
+        await db.addAuditEntry({
+            type: 'kvkk', action: 'Analiz kaydı silindi',
+            details: `#${id} · ${row.pharmacy_name || '—'} · ${row.drug_name || '—'} · ${row.decision || '—'} · kayıt ${row.created_at}`,
+            user: actor(req), tags: ['kvkk', 'silme']
+        });
+        res.json({ success: true, deleted: { id, pharmacy: row.pharmacy_name, drug: row.drug_name } });
+    } catch (err) {
+        console.error('[HATA] Analiz silme:', err.message);
+        res.status(500).json({ success: false, error: 'Silinemedi.' });
+    }
+});
+
+// Saklama süresini aşan kayıtları sil (RETENTION_DAYS; 0 = sınırsız). Denetim izi silinmez.
+async function runRetentionPurge(trigger, who) {
+    const days = retentionDays();
+    if (!days) return { skipped: true, days: 0 };
+    const r = await db.purgeOlderThan(days);
+    if (r.analyses || r.readings || r.deviceSerials) {
+        console.log(`[KVKK] Saklama temizliği (${trigger}): ${r.analyses} analiz, ${r.readings} ham seri, ${r.deviceSerials} cihaz kaydı silindi (> ${days} gün)`);
+        await db.addAuditEntry({
+            type: 'kvkk', action: 'Saklama süresi temizliği',
+            details: `${days} günden eski: ${r.analyses} analiz, ${r.readings} ham seri, ${r.deviceSerials} cihaz seri kaydı silindi (${trigger})`,
+            user: who || 'Sistem', tags: ['kvkk', 'purge']
+        }).catch(() => {});
+    }
+    return { skipped: false, days, ...r };
+}
+app.post('/api/maintenance/purge', requireAdmin, async (req, res) => {
+    try { res.json({ success: true, ...(await runRetentionPurge('elle', actor(req))) }); }
+    catch (err) { res.status(500).json({ success: false, error: 'Temizlik başarısız.' }); }
 });
 
 // Faz 6: saklanan ham seriyi geri ver (yeniden işleme / korpus için)
@@ -1522,6 +1564,11 @@ function start() {
 
         // Veritabanını Başlat
         db.initDB();
+
+        // KVKK saklama süresi: açılıştan 20 sn sonra ve her 24 saatte bir (RETENTION_DAYS > 0 ise)
+        const purge = (trigger) => runRetentionPurge(trigger).catch(e => console.error('[HATA] Saklama temizliği:', e.message));
+        setTimeout(() => purge('açılış'), 20000).unref();
+        setInterval(() => purge('günlük'), 24 * 60 * 60 * 1000).unref();
     });
 
     // Port doluysa sessizce ölme: büyük ihtimalle uygulamanın başka bir kopyası
