@@ -1,0 +1,30 @@
+SOĞUK ZİNCİR OTOMASYON — KURULUM REHBERİ
+=========================================
+
+1) KURULUM
+   • "Soguk-Zincir-Otomasyon-Kurulum-3.3.0.exe" dosyasına çift tıklayın.
+   • Windows "Bilinmeyen yayımcı" / SmartScreen uyarısı gösterirse:
+     "Ek bilgi" → "Yine de çalıştır" seçin. (Uygulama imzalı değildir; bu normaldir.)
+   • Kurulum tek tıkla, soru sormadan tamamlanır ve uygulama kendiliğinden açılır.
+   • Masaüstüne ve Başlat menüsüne "Soguk Zincir Otomasyon" kısayolu eklenir.
+
+2) İLK AÇILIŞ
+   • Ekranda "İlk kurulum" görünür. Ad, e-posta ve bir şifre girin
+     (şifre en az 8 karakter, harf + rakam). Bu hesap yönetici hesabıdır.
+   • Yapay zeka (Gemini) anahtarı kurulumla birlikte gelir; ayrıca bir şey girmeniz gerekmez.
+     Gerekirse Ayarlar › Yapay Zeka ekranından değiştirilebilir.
+
+3) GÜNLÜK KULLANIM
+   • Masaüstündeki kısayola tıklayın; uygulama kendi penceresinde açılır.
+   • İnternet yalnızca taranmış PDF'lerin yapay zeka ile okunması için gerekir.
+     Excel/CSV ve öğrenilmiş şablonlar internetsiz çalışır.
+
+4) VERİLER NEREDE?
+   • %APPDATA%\coldchain-ai\  (coldchain.db, .env, backups\)
+   • Günlük otomatik yedek alınır; elle yedek için Ayarlar › Veri Bütünlüğü › Şimdi yedekle.
+
+5) SORUN GİDERME
+   • "Port 3000 zaten kullanımda" uyarısı: uygulamanın başka bir kopyası açık.
+     Görev çubuğundan/Görev Yöneticisi'nden kapatıp yeniden açın.
+   • Kaldırmak için: Ayarlar › Uygulamalar › Soguk Zincir Otomasyon › Kaldır.
+     Veriler %APPDATA%\coldchain-ai klasöründe kalır; isterseniz elle silebilirsiniz.

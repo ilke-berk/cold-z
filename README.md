@@ -51,7 +51,7 @@ Ayrıntılı tasarım kararları ve faz geçmişi: [GELISTIRME-RAPORU.md](GELIST
 | Ortam | Konum |
 |---|---|
 | Geliştirme (`npm start`) | proje kökü: `coldchain.db`, `.env`, `audit.key`, `audit.head.json`, `backups/` |
-| Paketli kurulum (Electron) | `%APPDATA%\Soguk Zincir Otomasyon\` altında aynı dosyalar |
+| Paketli kurulum (Electron) | `%APPDATA%\coldchain-ai\` altında aynı dosyalar |
 
 **Yedekleme:** Ayarlar › Veri Bütünlüğü › *Şimdi yedekle* veya günlük otomatik (`BACKUP_AUTO=0` kapatır, `BACKUP_KEEP` tutulan sayı). Yedek klasörü: `backups/<zaman damgası>/` içinde `coldchain.db` (tutarlı anlık görüntü), `audit.key`, `audit.head.json`, `MANIFEST.json`. **Geri yükleme:** uygulamayı kapatın, bu üç dosyayı veri konumuna kopyalayın. `.env` yedeğe girmez; API anahtarı yeniden girilir.
 
@@ -64,7 +64,8 @@ Ayrıntılı tasarım kararları ve faz geçmişi: [GELISTIRME-RAPORU.md](GELIST
 ## Gereksinimler
 
 - Node.js 22.x (testler `--test` glob desteği ister)
-- Windows paketleme: `npm run build` (NSIS). CI, her push'ta Windows'ta paketlemeyi prova eder (`.github/workflows/test.yml`).
+- Windows paketleme: `npm run build` (NSIS). Proje kökünde `.env` varsa `scripts/after-pack.js` onu `resources/seed.env` olarak pakete ekler; paketli ilk açılışta `userData/.env` yoksa oraya kopyalanır (alıcı API anahtarı girmez; `KURULUM.txt` alıcıya verilir). CI'da `.env` olmadığı için tohum eklenmez.
+- Paketlerken `npm start` ile çalışan geliştirme sunucusunu kapatın: sqlite3 ikilisini kilitler (EPERM). Paketleme node_modules içindeki sqlite3'ü Electron ABI'sine derler; sonra `npm start` için `npm rebuild sqlite3` gerekir. CI, her push'ta Windows'ta paketlemeyi prova eder (`.github/workflows/test.yml`).
 
 ## Lisans
 
