@@ -57,8 +57,12 @@ jobs:
           set -e
           ls dist/win-unpacked
           test -f "dist/win-unpacked/Soguk Zincir Otomasyon.exe"
-          npx @electron/asar list dist/win-unpacked/resources/app.asar | grep -E "^/app.html$|^/web/ui/cr-app.js$|^/web/vendor/react.min.js$|^/auth.js$"
-          npx @electron/asar list dist/win-unpacked/resources/app.asar | grep -E "^/(tests|scripts|\.env|coldchain\.db|ui/cr-app\.jsx)" && { echo "Pakete girmemesi gereken dosya var"; exit 1; } || true
+          # Windows'ta asar yolları "\app.html" biçiminde listelenir: "/" ile normalleştir
+          npx @electron/asar list dist/win-unpacked/resources/app.asar | tr '\134' '/' | tr -d '\r' > asar-list.txt
+          for f in /app.html /web/ui/cr-app.js /web/ui/cr-bexflow.js /web/vendor/react.min.js /auth.js /bexflow-service.js; do
+            grep -qx "$f" asar-list.txt || { echo "Pakette eksik: $f"; exit 1; }
+          done
+          if grep -E "^/(tests|scripts|\.env|coldchain\.db|ui/cr-app\.jsx)" asar-list.txt; then echo "Pakete girmemesi gereken dosya var"; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
           name: win-unpacked
