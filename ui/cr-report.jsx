@@ -18,6 +18,19 @@
   .rp-tirRow{margin-bottom:11px;}
   .rp-tirL{display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px;}
   .rp-ref{font-size:12px;color:var(--t2);line-height:1.6;padding:13px 15px;background:var(--sigS);border-left:3px solid var(--sig);border-radius:0 8px 8px 0;}
+  /* açılır-kapanır listeler: 3 satır görünür, "Devam et" ile tamamı */
+  .rp-rs{font-size:13px;color:var(--t2);padding:7px 0 7px 12px;border-left:2px solid var(--bad);margin-bottom:7px;line-height:1.5;}
+  .rp-rs.amber{border-color:var(--amber);}
+  .rp-rs.ok{border-color:var(--ok);}
+  .rp-rs.dim{border-color:var(--ln2);}
+  .rp-foot{display:flex;align-items:center;gap:14px;padding:10px 18px;border-top:1px dashed var(--ln);font-size:12px;color:var(--t3);}
+  .rp-more{display:inline-flex;align-items:center;gap:8px;font-family:inherit;font-size:11.5px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--sig);background:var(--sigS);border:1px solid transparent;border-radius:6px;padding:7px 12px;cursor:pointer;}
+  .rp-more:hover{border-color:var(--sig);}
+  .rp-more:focus-visible{outline:2px solid var(--sig);outline-offset:2px;}
+  .rp-more i{display:inline-block;font-style:normal;transition:transform .2s;}
+  .rp-more.open i{transform:rotate(180deg);}
+  .rp-cnt{font-size:11px;color:var(--t3);letter-spacing:.3px;text-transform:none;font-weight:500;margin-left:auto;}
+  @media (prefers-reduced-motion: reduce){.rp-more i{transition:none;}}
   /* beyaz sertifika */
   .rp-cert{background:#ffffff;color:#1f2937;border-radius:12px;padding:34px 38px;box-shadow:0 18px 50px rgba(0,0,0,.35);font-family:'Space Grotesk',sans-serif;}
   .rp-certHd{display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid #0f1828;padding-bottom:16px;margin-bottom:20px;}
@@ -47,8 +60,14 @@
   const decMeta = {
     accept: { c: 'var(--ok)', s: 'var(--okS)', hex: '#1c9961', bg: '#e9f6ee', t1: 'KABUL', sub: 'İADE ONAYLANDI' },
     conditional: { c: 'var(--amber)', s: 'var(--amberS)', hex: '#b07d18', bg: '#f7efd9', t1: 'ŞARTLI', sub: 'KOŞULLU KABUL' },
+    revize: { c: 'var(--rev, var(--amber))', s: 'var(--revS, var(--amberS))', hex: '#b07d18', bg: '#f7efd9', t1: 'REVİZE', sub: 'REVİZE İSTENDİ' },
     reject: { c: 'var(--bad)', s: 'var(--badS)', hex: '#cb3c48', bg: '#fae7e8', t1: 'RED', sub: 'İADE REDDEDİLDİ' },
   };
+  // Belge no: seri yoksa parti, o da yoksa kayıt ID'si (cr-export.jsx ile aynı kural)
+  const isBlank = v => v == null || String(v).trim() === '' || String(v).trim() === '—';
+  const docId = S => 'CC-' + (!isBlank(S.serial) ? S.serial : !isBlank(S.batch) ? S.batch : (S.savedId || S.id || 'KAYIT')) + '-2606';
+  const numOr = (v, d) => (v == null || v === '' || !isFinite(Number(v))) ? d : Number(v);
+  const fmtC = n => (Number(n) || 0).toFixed(2).replace('.', ',');
   const getDocDate = () => {
     const d = new Date();
     const pad = n => String(n).padStart(2, '0');
@@ -65,7 +84,8 @@
     const S = real || CCScenarios[sc];
     const [saveState, setSaveState] = useState(stored && stored.savedId ? 'saved' : 'idle'); // idle|saving|saved|error
     const [savedId, setSavedId] = useState(stored && stored.savedId);
-    const lo = Number(S.lo) || 2, hi = Number(S.hi) || 8;
+    const lo = numOr(S.lo, 2), hi = numOr(S.hi, 8);
+    const cl = numOr(S.critLo, lo - 2), ch = numOr(S.critHi, hi + 7);
     const m = decMeta[S.decision] || decMeta.conditional;
     const conf = S.conf;
     const tir = S.tir;
@@ -75,15 +95,53 @@
       stat('MKT (Ortalama Kinetik)', S.mkt.toFixed(2) + '°C', lo.toFixed(2) + ' – ' + hi.toFixed(2) + '°C', S.mkt >= lo && S.mkt <= hi),
       stat('Min / Maks', S.min.toFixed(1) + ' / ' + S.max.toFixed(1) + '°C', lo + ' – ' + hi + '°C', S.min >= lo && S.max <= hi),
       stat('Ortalama', S.mean.toFixed(2) + '°C', lo + ' – ' + hi + '°C', S.mean >= lo && S.mean <= hi),
+      stat('Buzdolabı Dışı (TOR)', (S.torUsed || 0).toLocaleString('tr-TR') + ' dk', '≤ ' + (S.torLimit || 120) + ' dk', (S.torUsed || 0) <= (S.torLimit || 120)),
       stat('Kayıt Aralığı', S.gap + ' dk', '≤ 60 dk', S.gap <= 60),
     ];
+
+    // Açılır-kapanır listeler: sapma çoksa sayfa uzamasın diye 3 satır + "Devam et"
+    const PREVIEW = 3;
+    const [openReasons, setOpenReasons] = useState(false);
+    const [openRetro, setOpenRetro] = useState(false);
+    const [openExc, setOpenExc] = useState(false);
+    const reasons = S.reasons || [];
+    const excursions = S.excursions || [];
+    // Kaynak belgeler (orijinal dosyalar) — "Belgede göster" ile sapmanın yeri açılır
+    const sources = (real && stored.sources) || [];
+    const [srcView, setSrcView] = useState(null);   // null | { exc, file }
+    const [srcWarn, setSrcWarn] = useState(null);
+    const retroRows = (retro && retro.windows) || [];
+    const reasonTone = r => /KRİTİK|RED|ANTI-FRAUD|limit dışı/i.test(r) ? '' : /REVİZE|VERİ|telafi/i.test(r) ? 'amber' : /korunmuştur|sorun teşkil etmedi/i.test(r) ? 'ok' : 'dim';
+    const MoreBtn = ({ open, onClick, more, all }) => (
+      <button type="button" className={'rp-more' + (open ? ' open' : '')} onClick={onClick} aria-expanded={open}>
+        <i>▾</i>{open ? 'Daralt' : (all ? 'Tümünü göster' : 'Devam et') + ' (+' + more + ')'}
+      </button>
+    );
 
     const doSave = async () => {
       if (!real || !stored.record || saveState === 'saving' || saveState === 'saved') return;
       setSaveState('saving');
       try {
         const j = await CCPipeline.save(stored.record);
-        if (j && j.success) { setSavedId(j.id); setSaveState('saved'); CCStore.patch({ savedId: j.id }); }
+        if (j && j.success) {
+          setSavedId(j.id); setSaveState('saved'); CCStore.patch({ savedId: j.id });
+          // BexFlow'dan gelen ısı kaydıysa analizi o eke bağla (BexFlow İadeleri ekranında görünür)
+          const bx = stored.bexflow;
+          if (bx && bx.attachmentIds) bx.attachmentIds.forEach(id => fetch(`/api/bexflow/attachments/${id}/link-analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ analysisId: j.id }) }).catch(() => {}));
+          // Elle yüklenen orijinal dosyaları analizle birlikte sakla (rapor sonradan da "Belgede göster" açabilsin)
+          const local = sources.filter(s => !s.bexflowAttachmentId && window.CCSources && CCSources.file(s));
+          if (local.length) {
+            try {
+              const fd = new FormData();
+              local.forEach(s => fd.append('files', CCSources.file(s), s.name));
+              const r = await fetch(`/api/analyses/${j.id}/sources`, { method: 'POST', body: fd }).then(x => x.json());
+              if (r && r.success) {
+                const byName = new Map(r.sources.map(x => [x.name, x.id]));
+                CCStore.patch({ sources: sources.map(s => byName.has(s.name) ? { ...s, analysisId: j.id, analysisSourceId: byName.get(s.name) } : s) });
+              } else setSrcWarn('Kaynak belgeler saklanamadı: ' + ((r && r.error) || 'bilinmeyen hata'));
+            } catch (e) { setSrcWarn('Kaynak belgeler saklanamadı: ' + e.message); }
+          }
+        }
         else setSaveState('error');
       } catch (e) { setSaveState('error'); }
     };
@@ -108,6 +166,26 @@
             <button className="cr-btn" onClick={() => window.print()}><Ic.report size={15} /> YAZDIR / PDF</button>
           </div>
         </div>
+
+        {sources.length > 0 && (
+          <div className="cr-pn" style={{ marginBottom: 16, padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="cr-pt" style={{ marginRight: 6 }}><Ic.eye size={15} style={{ color: 'var(--sig)' }} /> KAYNAK BELGELER</div>
+            {sources.map((s, i) => {
+              const ok = window.CCSources && CCSources.has(s);
+              return (
+                <button key={s.name} className="cr-btn cr-btn2" style={{ padding: '6px 11px', fontSize: 11.5, opacity: ok ? 1 : .55 }} disabled={!ok}
+                  title={ok ? 'Orijinal dosyayı aç' : 'Bu dosya saklanmamış (analiz kaydedilmeden oturum kapanmış)'}
+                  onClick={() => setSrcView({ exc: -1, file: i })}>
+                  {s.name}{s.bexflowAttachmentId ? ' · BexFlow' : ''}
+                </button>
+              );
+            })}
+            {excursions.length > 0 && <span style={{ fontSize: 11, color: 'var(--t3)' }}>Sapmaların belgedeki yeri için aşağıdaki tabloda "Belgede göster"e tıklayın.</span>}
+            {saveState !== 'saved' && sources.some(s => !s.bexflowAttachmentId && !s.analysisSourceId) && <span style={{ fontSize: 11, color: 'var(--amber)' }}>Elle yüklenen belgeler "Sisteme kaydet" ile saklanır.</span>}
+            {srcWarn && <span style={{ fontSize: 11, color: 'var(--bad)' }}>{srcWarn}</span>}
+          </div>
+        )}
+        {srcView && window.CRSourceViewer && <window.CRSourceViewer sources={sources} excursions={excursions} initialExc={srcView.exc} initialFile={srcView.file} onClose={() => setSrcView(null)} />}
 
         <div className="rp-g2">
           {/* Ürün karnesi */}
@@ -135,10 +213,10 @@
                 <span style={{ fontSize: 27, fontWeight: 700, color: m.c }}>{m.t1}</span>
                 <span style={{ fontSize: 14, color: 'var(--t2)' }}>· <b className="cr-m" style={{ color: m.c }}>%{conf}</b> güven</span>
               </div>
-              <div style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--tx)', marginBottom: 16 }}>{S.summary}</div>
-              <div className="rp-tirRow" style={{ marginBottom: 0 }}>
-                {S.reasons.map((r, i) => <div key={i} style={{ fontSize: 13, color: 'var(--t2)', padding: '7px 0 7px 12px', borderLeft: '2px solid ' + m.c, marginBottom: 7, lineHeight: 1.5 }}>{r}</div>)}
-              </div>
+              <div style={{ fontSize: 14.5, lineHeight: 1.6, color: 'var(--tx)', marginBottom: 12 }}>{S.summary}</div>
+              {reasons.length > 0 && (
+                <div style={{ fontSize: 12, color: 'var(--t3)' }}>{reasons.length} gerekçe · sıcaklık istatistiklerinin altında listelenir.</div>
+              )}
             </div>
           </div>
         </div>
@@ -160,43 +238,119 @@
           </table>
         </div>
 
+        {/* Gerekçeler — sonuç tablosunun altında, 3 satır + Devam et */}
+        {reasons.length > 0 && (
+          <div className="cr-pn" style={{ marginBottom: 16, overflow: 'hidden', borderLeft: '3px solid ' + m.c }}>
+            <div className="cr-ph">
+              <div className="cr-pt"><Ic.activity size={15} style={{ color: 'var(--sig)' }} /> GEREKÇELER</div>
+              <span className="rp-cnt">{reasons.length} gerekçe{!openReasons && reasons.length > PREVIEW ? ' · ' + PREVIEW + ' gösteriliyor' : ''}</span>
+            </div>
+            <div style={{ padding: '14px 18px 8px' }}>
+              {(openReasons ? reasons : reasons.slice(0, PREVIEW)).map((r, i) => (
+                <div key={i} className={'rp-rs ' + reasonTone(r)}>{r}</div>))}
+            </div>
+            {reasons.length > PREVIEW && (
+              <div className="rp-foot"><MoreBtn open={openReasons} onClick={() => setOpenReasons(o => !o)} more={reasons.length - PREVIEW} /></div>
+            )}
+          </div>
+        )}
+
         {/* MKT Kontrol (Geriye Dönük) */}
         {retro && (
           <div className="cr-pn" style={{ marginBottom: 16, overflow: 'hidden' }}>
             <div className="cr-ph">
               <div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> MKT KONTROL (GERİYE DÖNÜK)</div>
-              <span className="an-st" style={{ color: retro.hasProblem ? 'var(--bad)' : 'var(--ok)', background: 'transparent' }}>
-                <i style={{ width: 5, height: 5, borderRadius: '50%', background: retro.hasProblem ? 'var(--bad)' : 'var(--ok)' }} />
-                {retro.hasProblem ? retro.problemCount + ' HATALI ARALIK' : 'SORUN BULUNAMADI'}
+              <span className="an-st" style={{ color: retro.engineMissing || retro.noData ? 'var(--amber)' : retro.hasProblem ? 'var(--bad)' : 'var(--ok)', background: 'transparent' }}>
+                <i style={{ width: 5, height: 5, borderRadius: '50%', background: retro.engineMissing || retro.noData ? 'var(--amber)' : retro.hasProblem ? 'var(--bad)' : 'var(--ok)' }} />
+                {retro.engineMissing || retro.noData ? 'KONTROL YAPILAMADI' : retro.hasProblem ? retro.problemCount + ' HATALI ARALIK' : 'SORUN BULUNAMADI'}
               </span>
             </div>
-            {!retro.triggered ? (
+            {retro.engineMissing || retro.noData ? (
+              <div style={{ padding: 18, fontSize: 12.5, color: 'var(--t2)' }}>
+                <b style={{ color: 'var(--amber)' }}>Kontrol yapılamadı</b> — {retro.engineMissing ? 'MKT motoru yüklenemedi; sayfayı yenileyin.' : 'sıcaklık serisi bulunamadı.'} Bu bölüm için sonuç üretilemedi.
+              </div>
+            ) : !retro.triggered ? (
               <div style={{ padding: 18, fontSize: 12.5, color: 'var(--t2)' }}>
                 <b style={{ color: 'var(--ok)' }}>Sorun bulunamadı</b> — sıcaklık hiçbir noktada {lo}–{hi}°C aralığının dışına çıkmadı; geriye dönük 24 saatlik MKT kontrolü gerekmedi.
               </div>
-            ) : !retro.hasProblem ? (
+            ) : !retro.hasProblem && !retro.insufficientCount ? (
               <div style={{ padding: 18, fontSize: 12.5, color: 'var(--t2)' }}>
                 <b style={{ color: 'var(--ok)' }}>Sorun bulunamadı</b> — tespit edilen {retro.excursionCount} sapma için düzelme anından geriye 24 saatlik MKT hesaplandı ve tümü {lo}–{hi}°C aralığında kaldı.
               </div>
             ) : (
-              <table className="cr-t">
-                <thead><tr>{['Sapma', 'Geriye Dönük 24 Saatlik Aralık', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {retro.windows.map((w, i) => (
-                    <tr key={i} style={{ cursor: 'default' }}>
-                      <td style={{ color: 'var(--t2)' }}>{w.type === 'high' ? 'Yüksek' : 'Düşük'} · {w.peak}°C</td>
-                      <td className="cr-m" style={{ color: 'var(--t2)' }}>{w.range}</td>
-                      <td className="cr-m" style={{ fontWeight: 600, color: w.isOk ? 'var(--tx)' : 'var(--bad)' }}>{w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
-                      <td><span className="an-st" style={{ color: w.isOk ? 'var(--ok)' : 'var(--bad)', background: 'transparent', padding: 0 }}><i style={{ width: 5, height: 5, borderRadius: '50%', background: w.isOk ? 'var(--ok)' : 'var(--bad)' }} />{w.isOk ? 'UYGUN' : 'İHLAL'}</span></td>
-                    </tr>))}
-                </tbody>
-              </table>
+              <React.Fragment>
+                <table className="cr-t">
+                  <thead><tr>{['Sapma', 'Sapma Aralığı', 'Geriye Dönük 24 Saatlik Aralık', 'Kapsam', '24h MKT', 'Durum'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {(openRetro ? retroRows : retroRows.slice(0, PREVIEW)).map((w, i) => {
+                      const bad = w.status === 'bad' || w.status === 'freeze' || (w.status == null && !w.isOk);
+                      const c = bad ? 'var(--bad)' : w.insufficient ? 'var(--amber)' : 'var(--ok)';
+                      return (
+                        <tr key={i} style={{ cursor: 'default' }}>
+                          <td style={{ color: 'var(--t2)' }}>{w.type === 'high' ? 'Yüksek' : 'Düşük'} · {w.peak}°C</td>
+                          <td className="cr-m" style={{ color: 'var(--t2)' }}>{w.excRange}</td>
+                          <td className="cr-m" style={{ color: 'var(--t2)' }}>{w.range}</td>
+                          <td className="cr-m" style={{ color: w.insufficient ? 'var(--amber)' : 'var(--t3)' }}>{w.coverage || '—'}</td>
+                          <td className="cr-m" style={{ fontWeight: 600, color: bad ? 'var(--bad)' : 'var(--tx)' }}>{w.mkt24h != null ? w.mkt24h + '°C' : '—'}</td>
+                          <td><span className="an-st" style={{ color: c, background: 'transparent', padding: 0 }}><i style={{ width: 5, height: 5, borderRadius: '50%', background: c }} />{w.status === 'freeze' ? 'DONMA' : bad ? 'İHLAL' : w.insufficient ? 'YETERSİZ VERİ' : 'UYGUN'}</span></td>
+                        </tr>);
+                    })}
+                  </tbody>
+                </table>
+                {retroRows.length > PREVIEW && (
+                  <div className="rp-foot">
+                    <MoreBtn open={openRetro} onClick={() => setOpenRetro(o => !o)} more={retroRows.length - PREVIEW} all />
+                    <span>{retroRows.length} pencere · {retro.problemCount} ihlal</span>
+                  </div>
+                )}
+              </React.Fragment>
             )}
             <div style={{ padding: '12px 18px', borderTop: '1px solid var(--ln)', fontSize: 11, color: 'var(--t3)', lineHeight: 1.5 }}>
               <b>Yöntem:</b> Sıcaklık {lo}–{hi}°C aralığının dışına <b>her çıktığında (istisnasız)</b>, sapmanın düzeldiği andan geriye doğru 24 saatlik MKT hesaplanır. Bu pencerenin MKT'si {lo}–{hi}°C dışındaysa ilgili aralık hatalı olarak bildirilir.
             </div>
           </div>
         )}
+
+        {/* Tespit edilen sapmalar — 3 satır + Tümünü göster */}
+        {excursions.length > 0 && (() => {
+          const durOf = x => x.durMin != null ? Number(x.durMin) || 0 : (() => { const s = String(x.dur || ''); let mn = 0; const g = s.match(/(\d+)\s*g\b/), h = s.match(/(\d+)\s*sa/), d = s.match(/(\d+)\s*dk/); if (g) mn += +g[1] * 1440; if (h) mn += +h[1] * 60; if (d) mn += +d[1]; return mn; })();
+          let low = 0, high = 0, li = 0, lmax = -1;
+          excursions.forEach((x, i) => { if (x.type === 'high') high++; else low++; const mn = durOf(x); if (mn > lmax) { lmax = mn; li = i; } });
+          const rows = openExc ? excursions : excursions.slice(0, PREVIEW);
+          const pad = String(excursions.length).length;
+          return (
+            <div className="cr-pn" style={{ marginBottom: 16, overflow: 'hidden' }}>
+              <div className="cr-ph">
+                <div className="cr-pt"><Ic.alert size={15} style={{ color: 'var(--sig)' }} /> TESPİT EDİLEN SAPMALAR</div>
+                <span className="rp-cnt">{excursions.length} sapma · {low} düşük / {high} yüksek{lmax > 0 ? ' · en uzun ' + lmax.toLocaleString('tr-TR') + ' dk' : ''}</span>
+              </div>
+              <table className="cr-t">
+                <thead><tr>{['#', 'Başlangıç', 'Bitiş', 'Süre', 'Tür', 'Tepe', ...(sources.length ? [''] : [])].map((h, k) => <th key={k}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {rows.map((x, i) => {
+                    const out = x.peak > hi || x.peak < lo;
+                    return (
+                      <tr key={i} style={{ cursor: 'default' }}>
+                        <td className="cr-m" style={{ color: 'var(--t3)' }}>{String(i + 1).padStart(pad, '0')}</td>
+                        <td className="cr-m">{x.start}</td>
+                        <td className="cr-m">{x.end}</td>
+                        <td className="cr-m" style={{ fontWeight: 600 }}>{x.dur}</td>
+                        <td style={{ color: 'var(--t2)' }}>{x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık'}{x.freeze ? ' · donma' : x.transient ? ' · anlık' : ''}{i === li && excursions.length > 1 ? ' · en uzun' : ''}</td>
+                        <td className="cr-m" style={{ fontWeight: 700, color: out ? 'var(--bad)' : 'var(--ok)' }}>{Number(x.peak).toFixed(2)}°C</td>
+                        {sources.length > 0 && <td style={{ textAlign: 'right' }}><button className="cr-btn cr-btn2" style={{ padding: '4px 10px', fontSize: 11 }} disabled={!sources.some(s => window.CCSources && CCSources.has(s))} onClick={() => setSrcView({ exc: excursions.indexOf(x), file: 0 })}><Ic.eye size={12} /> Belgede göster</button></td>}
+                      </tr>);
+                  })}
+                </tbody>
+              </table>
+              {excursions.length > PREVIEW && (
+                <div className="rp-foot">
+                  <MoreBtn open={openExc} onClick={() => setOpenExc(o => !o)} more={excursions.length - PREVIEW} all />
+                  <span>Excel çıktısında ve PDF ekinde (EK-1) tablo her zaman tam.</span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Veri bütünlüğü & güvenlik */}
         <div className="cr-pn" style={{ marginBottom: 16 }}>
@@ -216,7 +370,7 @@
           <div className="cr-ph"><div className="cr-pt">MEVZUAT REFERANSI</div></div>
           <div style={{ padding: 18 }}>
             <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 10 }}>{S.gdp}</div>
-            <div className="rp-ref">Standart 2–8°C TİTCK prosedürleri uygulanmıştır. Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası ve {S.gap} dk kayıt aralığı analiz edilmiştir.</div>
+            <div className="rp-ref">{lo}–{hi}°C saklama aralığı için TİTCK prosedürleri uygulanmıştır. Toplam {S.points.toLocaleString('tr-TR')} ölçüm noktası ve {S.gap} dk kayıt aralığı analiz edilmiştir{S.mktMethod === 'time-weighted' ? '; MKT zaman ağırlıklı hesaplanmıştır' : ''}.</div>
           </div>
         </div>
 
@@ -242,9 +396,9 @@
           <table className="rp-certTbl">
             <thead><tr><th>Parametre</th><th>Ölçülen</th><th>Kabul Limiti</th><th>Durum</th></tr></thead>
             <tbody>
-              {[['Ortalama Kinetik (MKT)', S.mkt.toFixed(2) + '°C', '2,00 – 8,00°C', S.mkt >= 2 && S.mkt <= 8],
-                ['Minimum Sıcaklık', S.min.toFixed(1) + '°C', '≥ 2,0°C', S.min >= 2],
-                ['Maksimum Sıcaklık', S.max.toFixed(1) + '°C', '≤ 8,0°C', S.max <= 8],
+              {[['Ortalama Kinetik (MKT)', S.mkt.toFixed(2) + '°C', fmtC(lo) + ' – ' + fmtC(hi) + '°C', S.mkt >= lo && S.mkt <= hi],
+                ['Minimum Sıcaklık', S.min.toFixed(1) + '°C', '≥ ' + fmtC(lo) + '°C', S.min >= lo],
+                ['Maksimum Sıcaklık', S.max.toFixed(1) + '°C', '≤ ' + fmtC(hi) + '°C', S.max <= hi],
                 ['Buzdolabı Dışı (TOR)', S.torUsed + ' dk', '≤ ' + S.torLimit + ' dk', S.torUsed <= S.torLimit]].map((r, i) => (
                 <tr key={i}><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td>
                   <td><span className="rp-cbd" style={{ color: r[3] ? '#1c9961' : '#cb3c48', background: r[3] ? '#e9f6ee' : '#fae7e8' }}>{r[3] ? 'UYGUN' : 'İHLAL'}</span></td></tr>))}
@@ -253,7 +407,7 @@
           <div className="rp-sig">
             <div>
               <div className="rp-sigT">SİSTEM REFERANSI</div>
-              <div className="rp-sigSub" style={{ marginTop: 8 }}>ColdChain AI v2.1 Verification Service<br />Belge ID: CC-{S.serial}-2606</div>
+              <div className="rp-sigSub" style={{ marginTop: 8 }}>ColdChain AI v{window.CC_VERSION || "?"} Verification Service<br />Belge ID: {docId(S)}</div>
             </div>
             <div>
               <div className="rp-sigT">KALİTE GÜVENCE MÜDÜRÜ ONAYI</div>
@@ -271,7 +425,7 @@
         <div className="cr-pn" style={{ marginBottom: 16 }}>
           <div className="cr-ph"><div className="cr-pt"><Ic.thermo size={15} style={{ color: 'var(--sig)' }} /> ISI MARUZİYET DAĞILIMI</div></div>
           <div style={{ padding: 18 }}>
-            {[['İdeal · 2–8°C', tir.ideal, 'var(--ok)'], ['Hafif ihlal · 0–2 / 8–15°C', tir.warn, 'var(--amber)'], ['Kritik · <0 / >15°C', tir.crit, 'var(--bad)']].map(([l, v, c]) => (
+            {[[`İdeal · ${lo}–${hi}°C`, tir.ideal, 'var(--ok)'], [`Hafif ihlal · ${cl}–${lo} / ${hi}–${ch}°C`, tir.warn, 'var(--amber)'], [`Kritik · <${cl} / >${ch}°C`, tir.crit, 'var(--bad)']].map(([l, v, c]) => (
               <div key={l} className="rp-tirRow">
                 <div className="rp-tirL"><span style={{ color: 'var(--t2)' }}>{l}</span><b className="cr-m" style={{ color: c }}>%{v}</b></div>
                 <div className="rp-bar"><div className="rp-barf" style={{ width: v + '%', background: c }} /></div>

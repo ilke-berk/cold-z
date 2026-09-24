@@ -193,6 +193,81 @@ describe('SmartParser.buildParser — dateSep şemaya sadık (kozmetik değil)',
     });
 });
 
+describe('SmartParser.buildParser — Azur regresyonu (nokta ondalıklı veri × virgül şeması)', () => {
+    // Gerçek vaka: "Azur eczanesi" raporu nokta ondalık yazar (5.94 °C) ama
+    // şablon hafızası/heuristik virgül şeması uygulamıştı → regex noktadan
+    // sonraki kesiri (94) bağımsız sayı olarak yakalayıp 94 °C üretiyordu.
+    const azurLine = '2026-07-02 00:04:09 5.94 °C 26.5 °C %60.72';
+
+    test('virgül şeması nokta ondalıklı satırdan kesir kırpmaz → null', () => {
+        const parse = SmartParser.buildParser({
+            dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: ',', tempColIndex: 0
+        });
+        assert.equal(parse(azurLine), null);
+    });
+
+    test('nokta şemasıyla dolap değeri ve saniyeli saat doğru okunur', () => {
+        const parse = SmartParser.buildParser({
+            dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: '.', tempColIndex: 0
+        });
+        const r = parse(azurLine);
+        assert.ok(r);
+        assert.equal(r.tempStr, 5.94);
+        assert.equal(r.timeStr, '00:04:09');
+        assert.equal(r.dateStr, '02/07/2026');
+    });
+
+    test('nem yüzdesi (%60.72) saat olarak yakalanmaz', () => {
+        const parse = SmartParser.buildParser({
+            dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: '.', tempColIndex: 0
+        });
+        const r = parse('2026-07-02 5.94 °C %60.72');
+        assert.ok(r);
+        assert.equal(r.timeStr, '00:00');
+        assert.equal(r.tempStr, 5.94);
+    });
+
+    test('tempColIndex 1 → ortam sıcaklığını seçer', () => {
+        const parse = SmartParser.buildParser({
+            dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: '.', tempColIndex: 1
+        });
+        assert.equal(parse(azurLine).tempStr, 26.5);
+    });
+});
+
+describe('SmartParser.detectDecimalStyle — veriden ondalık ayracı tespiti', () => {
+    test('nokta ondalıklı °C satırları → "."', () => {
+        const lines = [
+            '2026-07-02 00:04:09 5.94 °C 26.5 °C %60.72',
+            '2026-07-02 00:14:15 5.72 °C 26.52 °C %60.87',
+            '2026-07-02 00:24:21 5.37 °C 26.6 °C %60.82',
+        ];
+        assert.equal(SmartParser.detectDecimalStyle(lines), '.');
+    });
+
+    test('virgül ondalıklı °C satırları → ","', () => {
+        const lines = [
+            '06.03.2026 02:11 5,2 °C 16,6 °C 49 %',
+            '06.03.2026 02:21 5,3 °C 16,7 °C 49 %',
+            '06.03.2026 02:31 5,4 °C 16,8 °C 49 %',
+        ];
+        assert.equal(SmartParser.detectDecimalStyle(lines), ',');
+    });
+
+    test('birimli ondalık yoksa null → şemaya dokunulmaz', () => {
+        // Tarih noktaları (15.03.2024) ondalık sayımını kirletmemeli
+        assert.equal(SmartParser.detectDecimalStyle(['15.03.2024 10:30 5,2']), null);
+        assert.equal(SmartParser.detectDecimalStyle([]), null);
+        assert.equal(SmartParser.detectDecimalStyle(null), null);
+    });
+
+    test('tam sayı sıcaklıklar (5 °C) sayıma girmez', () => {
+        assert.equal(SmartParser.detectDecimalStyle([
+            '06.03.2026 02:11 5 °C', '06.03.2026 02:21 6 °C', '06.03.2026 02:31 7 °C'
+        ]), null);
+    });
+});
+
 describe('SmartParser.parseTextFile — uçtan uca IR hattı (Faz 2)', () => {
     // Metin yolu artık ortak IR'a iner: dedektör + güven skoru + postProcess.
     // pdfjsLib gerekmez; file.text() mock'lanır.

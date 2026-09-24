@@ -39,17 +39,35 @@ const envPath = isPackaged && userDataPath
     ? path.join(userDataPath, '.env')
     : path.join(__dirname, '.env');
 
+// Paketli ilk açılış: kurulum dosyasıyla gelen tohum ayarlar (resources/seed.env —
+// scripts/after-pack.js paketlerken geliştirici .env'sini kopyalar) userData/.env
+// yoksa oraya alınır. Böylece alıcı API anahtarı girmeden "tak-çalıştır" başlar;
+// sonradan Ayarlar ekranından değiştirilebilir. Tohum yoksa sessizce geçilir.
+if (isPackaged && userDataPath) {
+    try {
+        const fs = require('fs');
+        const seedPath = path.join(process.resourcesPath, 'seed.env');
+        if (!fs.existsSync(envPath) && fs.existsSync(seedPath)) {
+            fs.mkdirSync(userDataPath, { recursive: true });
+            fs.copyFileSync(seedPath, envPath);
+            console.log('[KURULUM] Tohum .env userData/.env olarak kopyalandı.');
+        }
+    } catch (e) { console.error('[UYARI] Tohum .env kopyalanamadı:', e.message); }
+}
 require('dotenv').config({ path: envPath });
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GeminiClient } = require('./gemini-client'); // @google/genai sarmalayıcısı (Faz 14)
 const { PDFDocument } = require('pdf-lib');
 const { splitPdf } = require('./pdf-helper');
 const db = require('./database');
 const DateFormatDetector = require('./date-format-detector');
 const FormatFingerprint = require('./js/format-fingerprint');
+const analysisSources = require('./analysis-sources');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// Tek sürüm kaynağı: package.json (arayüz web/version.js ile aynı değeri alır)
+const APP_VERSION = (() => { try { return require('./package.json').version; } catch (e) { return '0.0.0'; } })();
 
 // ─── Multer: Dosya yükleme (bellek içi) ────────────────────
 const upload = multer({
@@ -71,6 +89,40 @@ const upload = multer({
     }
 });
 
+// ─── Güvenlik başlıkları + hassas dosya engeli ──────────────
+// CSP: yalnızca aynı kökenden script/font/bağlantı; satır içi script yok
+// (önyükleme ui/cc-boot.js'te), satır içi stil serbest (React style prop).
+const CSP = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+].join('; ');
+const SENSITIVE_PATH = /(^|\/)(\.env(\..*)?|.*\.db(-journal|-wal|-shm)?|audit\.key|audit\.head\.json|package(-lock)?\.json|server\.js|database\.js|auth\.js|main\.js|pdf-helper\.js|vision-helper\.js|bexflow-(client|store|service|routes)\.js|analysis-sources\.js)$/i;
+app.use((req, res, next) => {
+    res.setHeader('Content-Security-Policy', CSP);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    // Proje kökü statik sunulur; veritabanı, .env, imza anahtarı ve sunucu
+    // kaynak dosyaları tarayıcıya asla verilmez.
+    if (!req.path.startsWith('/api/') && (SENSITIVE_PATH.test(req.path) || /^\/(node_modules|tests|scripts|bexflow|sources|\.git|\.github)(\/|$)/.test(req.path))) {
+        return res.status(404).end();
+    }
+    next();
+});
+const isLoopback = (req) => {
+    const a = String(req.socket && req.socket.remoteAddress || '');
+    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+};
+
 // ─── Statik dosya sunumu ────────────────────────────────────
 // Geliştirme: kaynak dosyaları (.html/.js/.jsx) cache'leme — kod değişikliği
 // tarayıcıyı yenileyince anında yansısın (eski cache'lenmiş JSX sorununu önler).
@@ -85,20 +137,25 @@ app.use(express.static(path.join(__dirname), {
 }));
 app.use(express.json({ limit: '20mb' }));
 
-// ─── BÖLÜM: CORS Eklemesi (Electron file:// protokolü için)
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    }
-    next();
-});
+// ─── Kimlik doğrulama (Faz 12) ──────────────────────────────
+// Sunucu tarafı oturum (HttpOnly çerez), kullanıcı tablosu, admin/qa rolleri.
+// /api/* uçları — health ve auth/status|setup|login hariç — oturum ister.
+const { createAuth } = require('./auth');
+const auth = createAuth({ db, audit: (e) => db.addAuditEntry(e), isLoopback });
+app.use(auth.requireAuth);
+auth.register(app);
+const requireAdmin = auth.requireRole('admin');
+const actor = (req) => (req.user && req.user.email) || 'Sistem';
+
+// ─── Köken kısıtı ────────────────────────────────────────────
+// Arayüz (Electron dahil) her zaman bu sunucudan http://localhost:PORT ile
+// yüklenir; file:// için gereken CORS joker başlığı (Faz 9 öncesi) kaldırıldı.
+// Tarayıcı aynı-köken kuralıyla başka sitelerin /api'ye erişimini engeller;
+// ayrıca sunucu yalnızca 127.0.0.1'e bağlanır (HOST ile değiştirilebilir).
 
 // ─── Gemini AI Kurulumu ─────────────────────────────────────
 let genAI = null;
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash'; // .env'den alindigi için buradan değil oradan değiştirin.
+let MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash'; // .env / Ayarlar ekranından değiştirilir
 const PAGES_PER_CHUNK = 3;  // Çok fazla sayfa olunca AI satır atlar (tembellik). Maks 3 sayfa/chunk.
 
 // ─── Fiyatlandırma (override için .env) ─────────────────────
@@ -114,13 +171,51 @@ const MODEL_PRICING = {
     'gemini-2.5-flash-preview': { input: 0.10,  output: 0.40 },
     'gemini-2.5-pro':           { input: 1.25,  output: 10.00 }
 };
-const PRICE_IN  = parseFloat(process.env.PRICE_INPUT_PER_M)  || MODEL_PRICING[MODEL_NAME]?.input  || 0.10;
-const PRICE_OUT = parseFloat(process.env.PRICE_OUTPUT_PER_M) || MODEL_PRICING[MODEL_NAME]?.output || 0.40;
-const USD_TRY   = parseFloat(process.env.USD_TRY_RATE) || 39;
+let PRICE_IN, PRICE_OUT, USD_TRY;
+// Çalışma zamanı ayarlarını process.env'den (yeniden) türet — Ayarlar ekranı
+// .env'yi yazdıktan sonra sunucu yeniden başlatılmadan devreye girer.
+function refreshRuntimeConfig() {
+    MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    PRICE_IN  = parseFloat(process.env.PRICE_INPUT_PER_M)  || MODEL_PRICING[MODEL_NAME]?.input  || 0.10;
+    PRICE_OUT = parseFloat(process.env.PRICE_OUTPUT_PER_M) || MODEL_PRICING[MODEL_NAME]?.output || 0.40;
+    USD_TRY   = parseFloat(process.env.USD_TRY_RATE) || 39;
+}
+refreshRuntimeConfig();
+
+const hasApiKey = () => !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'YOUR_API_KEY_HERE';
+const maskKey = k => (!k || k.length < 8) ? (k ? '••••' : '') : ('•'.repeat(Math.min(12, k.length - 4)) + k.slice(-4));
+
+// .env metnine anahtar/değer çiftlerini ekler-günceller; diğer satırlar ve
+// yorumlar korunur. value === null → satır silinir. Saf fonksiyon (testlenir).
+function upsertEnv(text, updates) {
+    const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    const seen = new Set();
+    const out = [];
+    for (const line of lines) {
+        const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+        const key = m && m[1];
+        if (key && Object.prototype.hasOwnProperty.call(updates, key)) {
+            seen.add(key);
+            if (updates[key] === null) continue;
+            out.push(`${key}=${updates[key]}`);
+        } else out.push(line);
+    }
+    for (const [k, v] of Object.entries(updates)) {
+        if (!seen.has(k) && v !== null) out.push(`${k}=${v}`);
+    }
+    return out.join('\n') + '\n';
+}
+
+// Her Gemini çağrısına istek zaman aşımı: asılı kalan bir çağrı işçiyi ve
+// HTTP isteğini sonsuza dek tutmasın (SDK requestOptions.timeout, ms).
+const GEMINI_REQ_OPTS = { timeout: Math.max(30000, parseInt(process.env.GEMINI_TIMEOUT_MS) || 180000) };
+const gemModel = (params) => genAI.getGenerativeModel(params);
 
 function initGemini() {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey === 'YOUR_API_KEY_HERE') {
+        genAI = null;
         console.warn('[UYARI] GEMINI_API_KEY ayarlanmamis!');
         console.warn(`         .env dosyasi su konumda olmalidir: ${envPath}`);
         console.warn('         Icerik: GEMINI_API_KEY=xxxxxxxxxxxx');
@@ -128,7 +223,7 @@ function initGemini() {
         return false;
     }
     try {
-        genAI = new GoogleGenerativeAI(apiKey);
+        genAI = new GeminiClient(apiKey, GEMINI_REQ_OPTS);
         console.log(`[OK] Gemini baglantisi kuruldu (model: ${MODEL_NAME})`);
         return true;
     } catch (err) {
@@ -234,8 +329,10 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
 
     try {
         const fileSizeKB = (req.file.size / 1024).toFixed(1);
+        // KVKK: dosya adı eczane/kişi adı taşıyabilir — konsola yalnızca tür ve boyut
+        const ext = (req.file.originalname.match(/\.[a-z0-9]+$/i) || [''])[0].toLowerCase();
         console.log(`-`.repeat(60));
-        console.log(`[ISTEK] ${req.file.originalname} (${fileSizeKB} KB, ${req.file.mimetype})`);
+        console.log(`[ISTEK] ${ext || '(uzantısız)'} dosya (${fileSizeKB} KB, ${req.file.mimetype}) · ${actor(req)}`);
         console.log(`-`.repeat(60));
 
         // --- AKILLI CHUNKING ---
@@ -252,8 +349,8 @@ app.post('/api/extract', upload.single('file'), async (req, res) => {
         console.log(`🤖 ${chunks.length} parça işleniyor (model: ${MODEL_NAME}, mod: ${STRUCTURED_OUTPUT ? 'JSON şema' : 'markdown'}, paralellik: ${CONCURRENCY})...\n`);
 
         const baseGen = { maxOutputTokens: 65536, temperature: 0 }; // OCR işinde determinizm gerekir
-        const modelMd = genAI.getGenerativeModel({ model: MODEL_NAME, generationConfig: baseGen });
-        const modelJson = genAI.getGenerativeModel({
+        const modelMd = gemModel({ model: MODEL_NAME, generationConfig: baseGen });
+        const modelJson = gemModel({
             model: MODEL_NAME,
             generationConfig: { ...baseGen, responseMimeType: 'application/json', responseSchema: EXTRACTION_RESPONSE_SCHEMA }
         });
@@ -859,7 +956,7 @@ app.post('/api/analyze-schema', upload.single('file'), async (req, res) => {
             console.log(`${'='.repeat(55)}`);
         }
 
-        const model = genAI.getGenerativeModel({
+        const model = gemModel({
             model: MODEL_NAME,
             generationConfig: { maxOutputTokens: 4096 }
         });
@@ -933,14 +1030,265 @@ app.post('/api/analyze-schema', upload.single('file'), async (req, res) => {
 });
 
 
+// ─── API: Satır Doğrulaması (Tier 1 — AI Hakem, Faz 7) ─────────────
+// Deterministik parse'ın örneklenmiş satırlarını Gemini'ye SADAKAT
+// denetimi için yeniden okutur: parsed değerler ham satırda gerçekten
+// öyle mi yazıyor? Metin-tabanlı (görüntü yok) → belge başına maliyet
+// kuruşun altında. Uyuşmazlıklar istemcide zorunlu incelemeye düşer.
+const VERIFY_MAX_ROWS = Math.min(50, Math.max(1, parseInt(process.env.VERIFY_MAX_ROWS || '20', 10) || 20));
+
+const VERIFY_RESPONSE_SCHEMA = {
+    type: 'OBJECT',
+    properties: {
+        verdicts: {
+            type: 'ARRAY',
+            items: {
+                type: 'OBJECT',
+                properties: {
+                    rowIndex: { type: 'INTEGER', description: 'İstekteki rowIndex aynen geri yazılır' },
+                    ok: { type: 'BOOLEAN', description: 'parsed değerler ham satıra sadık mı' },
+                    correctedDate: { type: 'STRING', description: 'GG.AA.YYYY — yalnız ok=false ise' },
+                    correctedTime: { type: 'STRING', description: 'HH:MM veya HH:MM:SS — yalnız ok=false ise' },
+                    correctedTemperature: { type: 'NUMBER', description: 'ham satırdan okunan doğru sıcaklık — yalnız ok=false ise' },
+                    note: { type: 'STRING', description: 'kısa Türkçe açıklama' }
+                },
+                required: ['rowIndex', 'ok']
+            }
+        }
+    },
+    required: ['verdicts']
+};
+
+const VERIFY_PROMPT = `Sen bir veri çıkarım denetçisisin. Sana JSON olarak satırlar verilecek: her satırda ham metin (rawText) ve otomatik sistemin çıkardığı değerler (parsed: date, time, temperature) var.
+
+GÖREVİN SADAKAT DENETİMİ: parsed değerler ham satırda gerçekten bu şekilde yazıyor mu?
+
+KURALLAR:
+1. Makullük yorumu YAPMA. Belge 128 diyorsa 128 doğrudur; senin işin belgeye sadakat, fizik değil.
+2. Önemsiz biçim farkları HATA DEĞİLDİR: ondalık virgül/nokta farkı (5,94 = 5.94), saniyenin atılması (00:04:09 → 00:04), baştaki sıfırlar (7 = 07), tarih ayracı farkı (02.07 = 02/07 = 02-07).
+3. Gerçek uyuşmazlıkta ok=false ver ve ham satırdan OKUDUĞUN doğru değeri corrected* alanlarına yaz (örn. rawText "5.94 °C" derken parsed temperature 94 ise → ok=false, correctedTemperature=5.94).
+4. rowIndex'i istekten aynen geri yaz, uydurma.
+5. Ham satırda birden çok sıcaklık varsa (dolap + ortam gibi), parsed sıcaklığın bunlardan HERHANGİ biriyle eşleşmesi yeterlidir; hiçbiriyle eşleşmiyorsa ok=false.
+6. Her istek satırı için tam bir verdict döndür.`;
+
+/**
+ * Doğrulama yanıtını saf olarak parse eder (test edilebilir).
+ * İstekte olmayan rowIndex'ler (halüsinasyon) elenir; virgüllü sayılar
+ * normalize edilir. verdicts dizisi yoksa fırlatır.
+ */
+function parseVerifyResponse(text, requestedIndices) {
+    let clean = String(text || '').trim()
+        .replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
+    if (!parsed || !Array.isArray(parsed.verdicts)) {
+        throw new Error('Doğrulama yanıtında verdicts dizisi yok');
+    }
+    const allowed = new Set((requestedIndices || []).map(Number));
+    const verdicts = [];
+    for (const v of parsed.verdicts) {
+        const idx = Number(v && v.rowIndex);
+        if (!Number.isInteger(idx)) continue;
+        if (allowed.size > 0 && !allowed.has(idx)) continue;
+        const verdict = { rowIndex: idx, ok: v.ok === true };
+        if (!verdict.ok) {
+            if (v.correctedDate) verdict.correctedDate = String(v.correctedDate);
+            if (v.correctedTime) verdict.correctedTime = String(v.correctedTime);
+            if (v.correctedTemperature !== undefined && v.correctedTemperature !== null && v.correctedTemperature !== '') {
+                const t = parseFloat(String(v.correctedTemperature).replace(',', '.'));
+                if (isFinite(t)) verdict.correctedTemperature = t;
+            }
+            if (v.note) verdict.note = String(v.note);
+        }
+        verdicts.push(verdict);
+    }
+    return { verdicts, mismatchCount: verdicts.filter(v => !v.ok).length };
+}
+
+app.post('/api/verify-rows', async (req, res) => {
+    if (process.env.VERIFY_ROWS_DISABLED === '1') {
+        return res.json({ success: false, disabled: true });
+    }
+    if (!genAI) {
+        return res.status(503).json({ success: false, error: 'Gemini API bağlantısı yok.' });
+    }
+    const rows = req.body && req.body.rows;
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ success: false, error: 'Doğrulanacak satır yok.' });
+    }
+
+    const payload = rows
+        .filter(r => r && typeof r.rawText === 'string' && r.rawText.trim() && r.parsed)
+        .slice(0, VERIFY_MAX_ROWS)
+        .map(r => ({ rowIndex: r.rowIndex, rawText: r.rawText, parsed: r.parsed }));
+    if (payload.length === 0) {
+        return res.status(400).json({ success: false, error: 'Doğrulanabilir (rawText içeren) satır yok.' });
+    }
+
+    try {
+        const startTime = Date.now();
+        const model = gemModel({
+            model: MODEL_NAME,
+            generationConfig: {
+                maxOutputTokens: 4096,
+                temperature: 0,
+                responseMimeType: 'application/json',
+                responseSchema: VERIFY_RESPONSE_SCHEMA
+            }
+        });
+
+        const body = JSON.stringify({ rows: payload, context: req.body.context || {} });
+        const result = await model.generateContent([VERIFY_PROMPT, body]);
+        const response = await result.response;
+        const { verdicts, mismatchCount } = parseVerifyResponse(response.text(), payload.map(r => r.rowIndex));
+
+        const usage = response.usageMetadata || {};
+        const inputTokens = usage.promptTokenCount || 0;
+        const outputTokens = usage.candidatesTokenCount || 0;
+        const inputCost = (inputTokens / 1_000_000) * PRICE_IN;
+        const outputCost = (outputTokens / 1_000_000) * PRICE_OUT;
+        const totalCost = inputCost + outputCost;
+        console.log(`[VERIFY] ${payload.length} satır denetlendi, ${mismatchCount} uyuşmazlık — ${inputTokens}+${outputTokens} token = $${totalCost.toFixed(6)} (${Date.now() - startTime}ms)`);
+
+        res.json({
+            success: true,
+            verdicts,
+            mismatchCount,
+            checkedCount: payload.length,
+            modelUsed: MODEL_NAME,
+            tokens: { input: inputTokens, output: outputTokens, total: inputTokens + outputTokens },
+            cost: {
+                input: parseFloat(inputCost.toFixed(6)),
+                output: parseFloat(outputCost.toFixed(6)),
+                total: parseFloat(totalCost.toFixed(6)),
+                totalTRY: parseFloat((totalCost * USD_TRY).toFixed(4))
+            }
+        });
+    } catch (err) {
+        console.error('[HATA] Satır doğrulama hatası:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+
 app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
         geminiReady: !!genAI,
         model: MODEL_NAME,
         timestamp: new Date().toISOString(),
-        version: '3.2.0-hybrid'
+        version: APP_VERSION
     });
+});
+
+// ─── AYARLAR (.env) ─────────────────────────────────────────
+// Ayarlar ekranı API anahtarını, modeli ve fiyat/kur değerlerini buradan
+// okur/yazar. Anahtar hiçbir zaman düz metin döndürülmez (maskeli son 4 hane).
+// Yazma yalnızca yerel makineden (loopback) ve admin rolüyle kabul edilir.
+const SETTINGS_KEYS = { apiKey: 'GEMINI_API_KEY', model: 'GEMINI_MODEL', priceIn: 'PRICE_INPUT_PER_M', priceOut: 'PRICE_OUTPUT_PER_M', usdTry: 'USD_TRY_RATE', extractConcurrency: 'EXTRACT_CONCURRENCY', retentionDays: 'RETENTION_DAYS' };
+const retentionDays = () => Math.max(0, parseInt(process.env.RETENTION_DAYS) || 0); // 0 = sınırsız
+
+function currentSettings() {
+    return {
+        hasKey: hasApiKey(),
+        keyMasked: hasApiKey() ? maskKey(process.env.GEMINI_API_KEY) : '',
+        geminiReady: !!genAI,
+        model: MODEL_NAME,
+        knownModels: Object.keys(MODEL_PRICING),
+        modelPricing: MODEL_PRICING,
+        priceIn: PRICE_IN,
+        priceOut: PRICE_OUT,
+        priceInOverride: !!parseFloat(process.env.PRICE_INPUT_PER_M),
+        priceOutOverride: !!parseFloat(process.env.PRICE_OUTPUT_PER_M),
+        usdTry: USD_TRY,
+        extractConcurrency: Math.max(1, Math.min(parseInt(process.env.EXTRACT_CONCURRENCY) || 2, 4)),
+        retentionDays: retentionDays(),
+        envPath,
+        port: Number(PORT),
+    };
+}
+
+app.get('/api/settings', (req, res) => {
+    res.json({ success: true, settings: currentSettings() });
+});
+
+app.post('/api/settings', requireAdmin, (req, res) => {
+    if (!isLoopback(req)) return res.status(403).json({ success: false, error: 'Ayarlar yalnızca yerel makineden değiştirilebilir.' });
+    const b = req.body || {};
+    const updates = {};
+    const errors = [];
+
+    if (b.apiKey !== undefined) {
+        const k = String(b.apiKey).trim();
+        if (k === '') updates[SETTINGS_KEYS.apiKey] = null;             // anahtarı kaldır
+        else if (!/^[A-Za-z0-9_\-]{20,}$/.test(k)) errors.push('API anahtarı geçersiz görünüyor (boşluk/özel karakter içeriyor veya çok kısa).');
+        else updates[SETTINGS_KEYS.apiKey] = k;
+    }
+    if (b.model !== undefined) {
+        const m = String(b.model).trim();
+        if (!/^[a-z0-9.\-]{3,60}$/i.test(m)) errors.push('Model adı geçersiz.');
+        else updates[SETTINGS_KEYS.model] = m;
+    }
+    const num = (field, key, min, max) => {
+        if (b[field] === undefined) return;
+        if (b[field] === null || b[field] === '') { updates[key] = null; return; } // varsayılana dön
+        const v = Number(b[field]);
+        if (!isFinite(v) || v < min || v > max) errors.push(`${field} ${min}–${max} aralığında olmalı.`);
+        else updates[key] = String(v);
+    };
+    num('priceIn', SETTINGS_KEYS.priceIn, 0, 1000);
+    num('priceOut', SETTINGS_KEYS.priceOut, 0, 1000);
+    num('usdTry', SETTINGS_KEYS.usdTry, 0.01, 10000);
+    num('extractConcurrency', SETTINGS_KEYS.extractConcurrency, 1, 4);
+    num('retentionDays', SETTINGS_KEYS.retentionDays, 0, 36500);
+
+    if (errors.length) return res.status(400).json({ success: false, error: errors.join(' ') });
+    if (!Object.keys(updates).length) return res.json({ success: true, changed: [], settings: currentSettings() });
+
+    try {
+        const fs = require('fs');
+        let text = '';
+        try { text = fs.readFileSync(envPath, 'utf8'); } catch (_) { /* ilk kurulum: dosya yok */ }
+        fs.mkdirSync(path.dirname(envPath), { recursive: true });
+        fs.writeFileSync(envPath, upsertEnv(text, updates), { encoding: 'utf8', mode: 0o600 });
+        for (const [k, v] of Object.entries(updates)) {
+            if (v === null) delete process.env[k]; else process.env[k] = v;
+        }
+        refreshRuntimeConfig();
+        const geminiReady = initGemini();
+        const changed = Object.keys(updates);
+        console.log(`[AYAR] .env güncellendi: ${changed.map(k => k === SETTINGS_KEYS.apiKey ? 'GEMINI_API_KEY (maskeli)' : k).join(', ')}`);
+        db.addAuditEntry({ type: 'settings', action: 'Ayarlar güncellendi', details: changed.map(k => k === SETTINGS_KEYS.apiKey ? 'GEMINI_API_KEY=' + (updates[k] === null ? '(kaldırıldı)' : maskKey(updates[k])) : `${k}=${updates[k] === null ? '(varsayılan)' : updates[k]}`).join(', '), user: actor(req), tags: ['settings'] }).catch(() => {});
+        res.json({ success: true, changed, geminiReady, settings: currentSettings() });
+    } catch (err) {
+        console.error('[HATA] Ayar yazma:', err.message);
+        res.status(500).json({ success: false, error: `.env yazılamadı: ${err.message}` });
+    }
+});
+
+// Anahtar/model bağlantı testi: küçük bir istek atar (maliyet ihmal edilebilir).
+// Gövdede apiKey verilirse kaydetmeden o anahtar denenir (ilk kurulum akışı).
+app.post('/api/settings/test', requireAdmin, async (req, res) => {
+    if (!isLoopback(req)) return res.status(403).json({ success: false, error: 'Yalnızca yerel makineden.' });
+    const b = req.body || {};
+    const key = (b.apiKey && String(b.apiKey).trim()) || process.env.GEMINI_API_KEY;
+    const modelName = (b.model && String(b.model).trim()) || MODEL_NAME;
+    if (!key || key === 'YOUR_API_KEY_HERE') return res.json({ success: false, error: 'API anahtarı tanımlı değil.' });
+    const t0 = Date.now();
+    try {
+        const client = new GeminiClient(key, { timeout: 15000 });
+        const model = client.getGenerativeModel({ model: modelName, generationConfig: { maxOutputTokens: 4, temperature: 0 } });
+        const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('Zaman aşımı (15 sn) — ağ/proxy erişimini kontrol edin.')), 15000));
+        await Promise.race([model.generateContent('ping'), timeout]);
+        res.json({ success: true, model: modelName, latencyMs: Date.now() - t0 });
+    } catch (err) {
+        const msg = String(err.message || err);
+        const friendly = /API key not valid|API_KEY_INVALID/i.test(msg) ? 'API anahtarı geçersiz.'
+            : /not found|is not supported/i.test(msg) ? `Model bulunamadı veya bu anahtarla desteklenmiyor: ${modelName}`
+            : /fetch failed|ENOTFOUND|ECONNREFUSED|EAI_AGAIN/i.test(msg) ? 'Google API sunucusuna ulaşılamıyor (internet/proxy).'
+            : msg;
+        res.json({ success: false, error: friendly, latencyMs: Date.now() - t0 });
+    }
 });
 
 // ─── DATABASE API ROUTES ────────────────────────────────────
@@ -969,6 +1317,71 @@ app.post('/api/save-analysis', async (req, res) => {
         console.error('[HATA] Kayit hatasi:', err.message);
         res.status(500).json({ success: false, error: 'Kayıt başarısız oldu.' });
     }
+});
+
+// ─── KVKK: analiz silme + saklama süresi temizliği (Faz 13) ──
+app.delete('/api/analyses/:id', requireAdmin, async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        if (isNaN(id)) return res.status(400).json({ success: false, error: 'Geçersiz id.' });
+        const row = await db.deleteAnalysis(id);
+        if (!row) return res.status(404).json({ success: false, error: 'Analiz bulunamadı.' });
+        await analysisSources.cleanupOrphans().catch(e => console.error('[HATA] Kaynak belge temizliği:', e.message));
+        await db.addAuditEntry({
+            type: 'kvkk', action: 'Analiz kaydı silindi',
+            details: `#${id} · ${row.pharmacy_name || '—'} · ${row.drug_name || '—'} · ${row.decision || '—'} · kayıt ${row.created_at}`,
+            user: actor(req), tags: ['kvkk', 'silme']
+        });
+        res.json({ success: true, deleted: { id, pharmacy: row.pharmacy_name, drug: row.drug_name } });
+    } catch (err) {
+        console.error('[HATA] Analiz silme:', err.message);
+        res.status(500).json({ success: false, error: 'Silinemedi.' });
+    }
+});
+
+// Saklama süresini aşan kayıtları sil (RETENTION_DAYS; 0 = sınırsız). Denetim izi silinmez.
+async function runRetentionPurge(trigger, who) {
+    const days = retentionDays();
+    if (!days) return { skipped: true, days: 0 };
+    const r = await db.purgeOlderThan(days);
+    r.sourceFiles = await analysisSources.cleanupOrphans().catch(() => 0);
+    if (r.analyses || r.readings || r.deviceSerials) {
+        console.log(`[KVKK] Saklama temizliği (${trigger}): ${r.analyses} analiz, ${r.readings} ham seri, ${r.deviceSerials} cihaz kaydı silindi (> ${days} gün)`);
+        await db.addAuditEntry({
+            type: 'kvkk', action: 'Saklama süresi temizliği',
+            details: `${days} günden eski: ${r.analyses} analiz, ${r.readings} ham seri, ${r.deviceSerials} cihaz seri kaydı, ${r.sourceFiles || 0} kaynak belge silindi (${trigger})`,
+            user: who || 'Sistem', tags: ['kvkk', 'purge']
+        }).catch(() => {});
+    }
+    return { skipped: false, days, ...r };
+}
+// ─── Yedekleme (Faz 14) ──────────────────────────────────────
+// userData/backups/<zaman damgası>/ altına tutarlı DB anlık görüntüsü (VACUUM INTO)
+// + denetim imza anahtarı + zincir başı kopyalanır. .env (API anahtarı) kopyalanmaz.
+// Elle (admin) veya günlük otomatik; son BACKUP_KEEP (varsayılan 7) yedek tutulur.
+const BACKUP_KEEP = Math.max(1, parseInt(process.env.BACKUP_KEEP) || 7);
+async function runBackup(trigger, who) {
+    const r = await db.backupTo(BACKUP_KEEP);
+    console.log(`[YEDEK] ${trigger}: ${r.dir} (${(r.bytes / 1024).toFixed(0)} KB, ${r.files.length} dosya, ${r.pruned} eski yedek silindi)`);
+    await db.addAuditEntry({
+        type: 'maintenance', action: 'Yedek alındı',
+        details: `${path.basename(r.dir)} · ${r.files.join(', ')} · ${(r.bytes / 1024).toFixed(0)} KB (${trigger})`,
+        user: who || 'Sistem', tags: ['yedek', trigger]
+    }).catch(() => {});
+    return r;
+}
+app.post('/api/maintenance/backup', requireAdmin, async (req, res) => {
+    try { res.json({ success: true, ...(await runBackup('elle', actor(req))) }); }
+    catch (err) { console.error('[HATA] Yedekleme:', err.message); res.status(500).json({ success: false, error: 'Yedek alınamadı: ' + err.message }); }
+});
+app.get('/api/maintenance/backups', requireAdmin, async (req, res) => {
+    try { res.json({ success: true, ...db.listBackups() }); }
+    catch (err) { res.status(500).json({ success: false, error: 'Yedek listesi alınamadı.' }); }
+});
+
+app.post('/api/maintenance/purge', requireAdmin, async (req, res) => {
+    try { res.json({ success: true, ...(await runRetentionPurge('elle', actor(req))) }); }
+    catch (err) { res.status(500).json({ success: false, error: 'Temizlik başarısız.' }); }
 });
 
 // Faz 6: saklanan ham seriyi geri ver (yeniden işleme / korpus için)
@@ -1006,11 +1419,12 @@ app.get('/api/stats', async (req, res) => {
 
 app.post('/api/audit', async (req, res) => {
     try {
-        const { type, action, details, user, tags } = req.body || {};
+        const { type, action, details, tags } = req.body || {};
         if (!type || !action) {
             return res.status(400).json({ success: false, error: 'type ve action zorunlu.' });
         }
-        const entry = await db.addAuditEntry({ type, action, details, user, tags });
+        // Kimlik istemciden değil oturumdan gelir (istemci "user" alanı yok sayılır)
+        const entry = await db.addAuditEntry({ type: String(type).slice(0, 40), action: String(action).slice(0, 200), details: details == null ? '' : String(details).slice(0, 4000), user: actor(req), tags });
         res.json({ success: true, ...entry });
     } catch (err) {
         console.error('[HATA] Audit kayit hatasi:', err.message);
@@ -1101,7 +1515,8 @@ app.post('/api/templates/match', async (req, res) => {
 
 app.post('/api/templates', async (req, res) => {
     try {
-        const { fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, source, user } = req.body || {};
+        const { fingerprint, kind, brand, producer, headerTokens, rowSignature, schema, source } = req.body || {};
+        const user = actor(req);
         if (!fingerprint || !kind || !schema) {
             return res.status(400).json({ success: false, error: 'fingerprint, kind ve schema zorunlu.' });
         }
@@ -1130,7 +1545,7 @@ app.get('/api/templates', async (req, res) => {
     }
 });
 
-app.delete('/api/templates/:id', async (req, res) => {
+app.delete('/api/templates/:id', requireAdmin, async (req, res) => {
     try {
         const id = parseInt(req.params.id);
         if (isNaN(id)) {
@@ -1145,7 +1560,7 @@ app.delete('/api/templates/:id', async (req, res) => {
             type: 'template',
             action: 'Format şablonu silindi',
             details: `#${id} ${deleted.brand || 'Etiketsiz marka'} · ${deleted.kind} · ${deleted.useCount} kez kullanılmış · parmak izi ${String(deleted.fingerprint).slice(0, 12)}…`,
-            user: (req.body && req.body.user) || undefined,
+            user: actor(req),
             tags: ['şablon', 'silme']
         }).catch(() => {});
         res.json({ success: true, deleted: { id: deleted.id, brand: deleted.brand } });
@@ -1155,15 +1570,47 @@ app.delete('/api/templates/:id', async (req, res) => {
     }
 });
 
+// ─── Analiz kaynak belgeleri (/api/analyses/:id/sources) ─────
+// Elle yüklenen orijinal dosyalar kayıtla birlikte saklanır; rapor "Belgede göster" için.
+analysisSources.register(app, { db, actor });
+
+// ─── BexFlow entegrasyonu (/api/bexflow/*) ──────────────────
+// Alliance Healthcare BexFlow iade iş akışından salt-okunur veri çekme
+// (oturum Electron penceresinde kullanıcı tarafından açılır). Bkz. bexflow-service.js
+require('./bexflow-routes')(app, {
+    db,
+    actor,
+    getModel: () => (genAI ? gemModel({ model: MODEL_NAME, generationConfig: { temperature: 0, responseMimeType: 'application/json' } }) : null),
+});
+
+// ─── Genel hata yakalayıcı ──────────────────────────────────
+// Multer (boyut/tür) ve beklenmeyen hatalar HTML yığın izi yerine JSON döner;
+// iç ayrıntı (dosya yolu, SDK mesajı) istemciye sızmaz, sunucu günlüğüne yazılır.
+app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    if (err && err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ success: false, error: 'Dosya 20 MB sınırını aşıyor.' });
+    if (err && /Desteklenmeyen dosya türü/.test(err.message)) return res.status(415).json({ success: false, error: err.message });
+    if (err && err.type === 'entity.too.large') return res.status(413).json({ success: false, error: 'İstek gövdesi çok büyük.' });
+    if (err && err.type === 'entity.parse.failed') return res.status(400).json({ success: false, error: 'Geçersiz JSON.' });
+    console.error('[HATA] İşlenmeyen hata:', err && err.stack ? err.stack.split('\n')[0] : err);
+    res.status(500).json({ success: false, error: 'Sunucu hatası. Ayrıntı için sunucu günlüğüne bakın.' });
+});
+
 // ─── SUNUCUYU BAŞLAT ────────────────────────────────────────
 // Yalnızca doğrudan çalıştırılınca (node server.js) port açılır; test
 // (require) ederken saf parser fonksiyonlarına erişmek için açılmaz.
 
 function start() {
     const geminiReady = initGemini();
-    app.listen(PORT, () => {
+    // Electron (main.js) pencereyi sunucu dinlemeye başlayınca açar: Promise port ile çözülür.
+    let resolveReady;
+    const ready = new Promise(r => { resolveReady = r; });
+    // Yalnızca yerel makine (tek kullanıcılı masaüstü). LAN erişimi gerekirse HOST=0.0.0.0
+    const HOST = process.env.HOST || '127.0.0.1';
+    const server = app.listen(PORT, HOST, () => {
+        resolveReady(Number(PORT));
         console.log('\n' + '='.repeat(60));
-        console.log('  ColdChain AI Server v3.2.0-hybrid (Smart Chunking + SQLite)');
+        console.log(`  ColdChain AI Server v${APP_VERSION} (Smart Chunking + SQLite)`);
         console.log('='.repeat(60));
         console.log(`  > Adres: http://localhost:${PORT}`);
         console.log(`  > Gemini: ${geminiReady ? '[ HAZIR ]' : '[ API ANAHTARI EKSIK ]'}`);
@@ -1174,7 +1621,34 @@ function start() {
 
         // Veritabanını Başlat
         db.initDB();
+
+        // KVKK saklama süresi: açılıştan 20 sn sonra ve her 24 saatte bir (RETENTION_DAYS > 0 ise)
+        const purge = (trigger) => runRetentionPurge(trigger).catch(e => console.error('[HATA] Saklama temizliği:', e.message));
+        setTimeout(() => purge('açılış'), 20000).unref();
+        setInterval(() => purge('günlük'), 24 * 60 * 60 * 1000).unref();
+        // Günlük otomatik yedek (temizlikten sonra, BACKUP_AUTO=0 ile kapatılır)
+        if (process.env.BACKUP_AUTO !== '0') {
+            const backup = (trigger) => runBackup(trigger).catch(e => console.error('[HATA] Otomatik yedek:', e.message));
+            setTimeout(() => backup('açılış'), 40000).unref();
+            setInterval(() => backup('günlük'), 24 * 60 * 60 * 1000).unref();
+        }
     });
+
+    // Port doluysa sessizce ölme: büyük ihtimalle uygulamanın başka bir kopyası
+    // (eski sürüm) çalışıyor ve tarayıcı onu gösteriyor. Açıkça söyle ve çık.
+    server.on('error', (err) => {
+        if (err.code !== 'EADDRINUSE') throw err;
+        const msg = `Port ${PORT} zaten kullanımda.\n\n` +
+            `Muhtemelen ColdChain AI'ın başka bir kopyası (eski sürüm?) çalışıyor.\n` +
+            `Önce onu kapatın veya .env dosyasında farklı bir PORT verin.`;
+        console.error('\n[HATA] ' + msg + '\n');
+        if (process.versions && process.versions.electron) {
+            try { require('electron').dialog.showErrorBox('ColdChain AI', msg); } catch (_) {}
+        }
+        process.exit(1);
+    });
+
+    return ready;
 }
 
 if (require.main === module) {
@@ -1185,8 +1659,10 @@ if (require.main === module) {
 module.exports = {
     app,
     start,
+    upsertEnv,
     parseStructuredResponse,
     parseMarkdownResponse,
+    parseVerifyResponse,
     smartDateResolve,
     splitRawDate
 };

@@ -77,6 +77,127 @@ describe('Korpus — OCR yolu (yapılandırılmış JSON + markdown)', () => {
     }
 });
 
+// ─── Faz 7 regresyon kilidi: nokta-veri × virgül-şema (Azur vakası) ───
+// Gerçek vaka: şablon hafızası virgül ondalıklı şemayı nokta ondalıklı
+// Azur belgesine uyguladı → 5.94°C sessizce 94°C okundu. İki savunma da
+// burada kilitlenir: (1) parser artık kesir kırpamaz, (2) kırpılmış veri
+// bir şekilde üretilse bile kanıt kontrolü + sert kapı incelemeye düşürür.
+const f7 = loadBrowserModules(
+    ['../date-format-detector.js', 'confidence.js', 'evidence-check.js', 'format-fingerprint.js', 'utils.js', 'data-parser.js', 'smart-parser.js'],
+    ['DateFormatDetector', 'ConfidenceScore', 'EvidenceCheck', 'FormatFingerprint', 'Utils', 'DataParser', 'SmartParser']
+);
+
+describe('Korpus — Azur vakası regresyon kilidi (Faz 7)', () => {
+    const dolap = [5.94, 5.72, 5.37, 5.31, 5.44, 5.63, 5.77, 5.87, 5.59, 5.25, 5.25, 5.39];
+    const azurLines = dolap.map((t, i) =>
+        `2026-07-02 00:${String(i * 4).padStart(2, '0')}:09 ${t} °C 26.5 °C %60.72`);
+
+    test('virgül şeması nokta ondalıklı satırlardan hiç veri üretmez (sessiz çöp yok)', () => {
+        const parse = f7.SmartParser.buildParser({
+            dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: ',', tempColIndex: 0
+        });
+        for (const line of azurLines) assert.equal(parse(line), null);
+    });
+
+    test('kesir kırpılmış çıkarım kanıt kontrolüne takılır ve zorunlu incelemeye düşer', () => {
+        // Eski hatanın simülasyonu: değerler kesir kısmı (5.94 → 94), rawText korunmuş
+        const base = new Date('2026-07-02T00:04:09').getTime();
+        const rows = dolap.map((t, i) => ({
+            timestamp: new Date(base + i * 600000),
+            temperature: Math.round((t % 1) * 100), // 94, 72, 37...
+            confidence: 1,
+            rowIndex: i,
+            rawText: azurLines[i]
+        }));
+        const metadata = { extraction: { sourcePath: 'pdf-digital', totalCandidates: rows.length } };
+        const processed = f7.DataParser.postProcess(rows, [], metadata, { resampling: false });
+        const ext = processed.metadata.extraction;
+
+        assert.equal(ext.evidence.checked, rows.length);
+        assert.equal(ext.evidence.missing, rows.length, 'hiçbir kırpılmış değer ham satırda bağımsız bulunamamalı');
+        assert.equal(ext.confidence.needsReview, true, 'sert kapı: belge incelemeye düşmeli');
+        assert.ok(ext.confidence.factors.some(f => f.factor === 'kanit-kontrolu'));
+    });
+
+    test('doğru çıkarım kanıt kontrolünden temiz geçer', () => {
+        const base = new Date('2026-07-02T00:04:09').getTime();
+        const rows = dolap.map((t, i) => ({
+            timestamp: new Date(base + i * 600000),
+            temperature: t,
+            confidence: 1,
+            rowIndex: i,
+            rawText: azurLines[i]
+        }));
+        const metadata = { extraction: { sourcePath: 'pdf-digital', totalCandidates: rows.length } };
+        const processed = f7.DataParser.postProcess(rows, [], metadata, { resampling: false });
+        const ext = processed.metadata.extraction;
+
+        assert.equal(ext.evidence.missing, 0);
+        assert.equal(ext.confidence.needsReview, false);
+    });
+});
+
+// ─── parseVerifyResponse — Tier 1 doğrulama yanıtı ayrıştırıcısı (Faz 7) ───
+// NOT: server.js'i require eden testler bu dosyada toplanır — ayrı bir test
+// dosyası daha server.js yüklerse Node paralel koşucusunda IPC çakışması
+// (Unable to deserialize cloned data) tetiklenebiliyor.
+describe('parseVerifyResponse — Tier 1 doğrulama yanıtı ayrıştırıcısı', () => {
+    test('temiz JSON parse edilir', () => {
+        const r = server.parseVerifyResponse(JSON.stringify({
+            verdicts: [
+                { rowIndex: 0, ok: true },
+                { rowIndex: 5, ok: false, correctedTemperature: 5.94, note: 'kesir kırpılmış' }
+            ]
+        }), [0, 5]);
+        assert.equal(r.verdicts.length, 2);
+        assert.equal(r.mismatchCount, 1);
+        assert.equal(r.verdicts[1].correctedTemperature, 5.94);
+        assert.equal(r.verdicts[1].note, 'kesir kırpılmış');
+    });
+
+    test('markdown kod çiti soyulur', () => {
+        const r = server.parseVerifyResponse('```json\n{"verdicts":[{"rowIndex":2,"ok":true}]}\n```', [2]);
+        assert.equal(r.verdicts.length, 1);
+        assert.equal(r.mismatchCount, 0);
+    });
+
+    test('istekte olmayan rowIndex (halüsinasyon) elenir', () => {
+        const r = server.parseVerifyResponse(JSON.stringify({
+            verdicts: [{ rowIndex: 99, ok: false }, { rowIndex: 1, ok: true }]
+        }), [0, 1]);
+        assert.equal(r.verdicts.length, 1);
+        assert.equal(r.verdicts[0].rowIndex, 1);
+        assert.equal(r.mismatchCount, 0);
+    });
+
+    test('virgüllü correctedTemperature normalize edilir', () => {
+        const r = server.parseVerifyResponse(JSON.stringify({
+            verdicts: [{ rowIndex: 0, ok: false, correctedTemperature: '5,94' }]
+        }), [0]);
+        assert.equal(r.verdicts[0].correctedTemperature, 5.94);
+    });
+
+    test('ok=true satırda corrected* alanları taşınmaz', () => {
+        const r = server.parseVerifyResponse(JSON.stringify({
+            verdicts: [{ rowIndex: 0, ok: true, correctedTemperature: 99 }]
+        }), [0]);
+        assert.equal(r.verdicts[0].correctedTemperature, undefined);
+    });
+
+    test('verdicts dizisi yoksa fırlatır', () => {
+        assert.throws(() => server.parseVerifyResponse('{"foo": 1}', [0]));
+        assert.throws(() => server.parseVerifyResponse('hiç json değil', [0]));
+    });
+
+    test('ok boolean olmayan değerler false sayılır (temkinli varsayılan)', () => {
+        const r = server.parseVerifyResponse(JSON.stringify({
+            verdicts: [{ rowIndex: 0, ok: 'evet' }]
+        }), [0]);
+        assert.equal(r.verdicts[0].ok, false);
+        assert.equal(r.mismatchCount, 1);
+    });
+});
+
 // ─── server parser birim doğrulamaları (Faz 5) ──────────────
 describe('parseStructuredResponse — yapılandırılmış JSON çıkarımı', () => {
     test('code-block sargılı JSON da çözülür', () => {

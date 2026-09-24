@@ -256,3 +256,154 @@ Sistemin hibrit (deterministik-önce, AI-yedekli) omurgası doğru. Ana sorun pa
 3. **Gerçek belgelerden regresyon korpusu** — her parser değişikliği ölçülebilir şekilde doğrulanır.
 
 Faz 1'deki hatalar (özellikle CSV eşleştirmesinin yok sayılması ve gün/ay takası varsayılanı) bugün üretimde sessiz yanlış sonuç üretebildiğinden ilk oradan başlanması önerilir.
+
+## 8. Karar Motoru Düzeltmeleri (Faz 8 — 10.09.2026)
+
+Parser tarafı Faz 1-7 ile olgunlaştıktan sonra yapılan kod incelemesi, sahadaki asıl güvenilirlik riskinin artık **karar motorunda** olduğunu gösterdi: analiz "başarılı" görünürken karar yanlış çıkabiliyordu. Aşağıdaki maddelerin tamamı `js/mkt-engine.js` ve `js/decision-engine.js`'de düzeltildi, `tests/mkt-engine.test.js` + `tests/decision-engine.test.js` ile kilitlendi (**301/301 geçiyor**).
+
+### Tespit → Düzeltme
+
+| # | Sorun (eski davranış) | Düzeltme |
+|---|---|---|
+| 1 | **MKT eşit aralık varsayıyordu.** Düzensiz logger aralığı, boşluk veya birleştirilmiş dosyalarda sık örneklenen dönem sonucu domine ediyordu. | `calculateWeighted`: trapez (zaman ağırlıklı) integrasyon. `fullAnalysis`, 24h pencereler ve grafikteki ölçüm aracı (`cr-decisionchart.jsx`) artık bunu kullanır. Eşit ağırlıklı değer `mktUnweighted` olarak yanında raporlanır; `mkt.method` çıktıda. |
+| 2 | **Donma MKT ile "kurtarılıyordu.** Geriye dönük kontrolde 0°C altı sapma, 24h MKT bant içindeyse sorun sayılmıyordu. | Yeni sapma sınıfı `freeze`: pencere `status: 'freeze'`, `isOk: false`, MKT değeri ne olursa olsun sorun. Karar motoru → RED ("donma hasarı geri dönüşsüzdür; MKT telafi sayılmaz"). Dondurulmuş ürün aralıklarında (alt limit < 0) donma kuralı uygulanmaz. |
+| 3 | **TOR yanlış hesaplanıyor, sonra hiç kullanılmıyordu.** Her aralık önceki örneğe yazılıyor, 6 saatlik logger kesintisi tamamen "dolap dışı" sayılıyordu; kural da yorum satırındaydı ama arayüz TOR limit/kullanım gösteriyordu. | `calculateTORDetailed`: geçiş aralıkları yarım (orta nokta), gapCap üstü aralık **bilinmeyen** (`unknownGapMinutes`, sayılmaz). TOR = üst limit ÜSTÜ süre; alt limit altı `coldMinutes`, donma `freezeMinutes` ayrı. Kural etkinleştirildi: aşım → **ŞARTLI** (formüler boş olduğundan RED değil; eczacı üretici stabilite verisiyle değerlendirir). |
+| 4 | **Zayıf veride kapı açık kalıyordu.** Kapsama ilk-son örnek farkıydı: 24 saat arayla iki örnek "tam kapsama" sayılıyordu; 20 saatin altında "yetersiz → ihlal değil" ile eksik kayıtlı logger tam kayıtlıdan avantajlıydı. | Kapsama = boşluk düşülmüş gerçek örnek-arası süre toplamı + en az `MIN_WINDOW_SAMPLES` (6) örnek. Yetersiz pencere yine ihlal değil ama karar motoru **ŞARTLI**'ya yükseltir (temiz kabul değil); `insufficientWhy` gerekçesi raporda. |
+| 5 | **Histerezis ve anlık sapma filtresi yoktu.** 8.1 / 7.9 / 8.1 flapping'i ayrı sapmalar açıyor, tek 8.1 okuması 24h MKT kontrolü tetikliyordu (koddaki "anlık sapmalar gözardı" notu uygulanmıyordu). | `findExcursionSegments` tek kaynak: histerezis (0.3°C) ile sapma ancak limitin içine dönünce kapanır; `transient` sınıfı (süre < 30 dk **ve** limitten ≤ 0.5°C) MKT penceresi açmaz, ihlal sayılmaz ama listelenir ve karara bilgi notu düşer. Kritik/donma okumaları ASLA transient sayılmaz. Süre orta nokta yaklaşımıyla (tek okuma @15dk ≈ 15 dk). |
+| 6 | **Uygunluk analizi 2-8 sabitti.** `analyzeCompliance` 0/15 eşiklerini sabit kodluyordu: dondurulmuş (−25…−15) ürünün her okuması "kritik donma" oluyordu. | `normalizeOptions`: `criticalLow = lo−2`, `criticalHigh = hi+7`, `freezeLimit = lo ≥ 0 ? 0 : yok` (hepsi config ile ezilebilir). Karar metinleri, TIR dilimleri (`cc-pipeline.js`) ve raporlar seçilen aralığı yazar. |
+| 7 | **Rapor/sertifika 2-8 sabit basıyordu**; `revize` kararı ekran raporunda "ŞARTLI" görünüyordu; sertifika belge no `CC-—-2606` olabiliyordu. | `cr-export.jsx` / `cr-report.jsx`: kabul limiti, grafik bandı, TIR etiketleri, mevzuat metni seçilen aralıktan; `revize` etiketi eklendi; belge no PDF ile aynı kuralı kullanır. Sapma listesinde "· donma" / "· anlık" işaretleri; geriye dönük tabloda DONMA rozeti. |
+| 8 | Sırasız / mükerrer zaman damgalı / geçersiz satırlı girdi negatif süre üretiyordu; `Math.min(...arr)` büyük seride yığın taşırıyordu. | `prepareSeries` (`fullAnalysis` girişinde, girdi değiştirilmez): sıralama, geçersiz ayıklama, aynı zaman damgasında ilk okuma. `preprocessing` çıktıda. Döngü tabanlı min/max. |
+| 9 | Ultra soğuk (−80…−60) preset her seferinde "makul değil" diye incelemeye düşüyordu. | Güven skorunun makullük bandı seçilen aralığa göre genişler (`options.limits` → `ext.plausibleMin/Max`); 2-8 için değişmez. |
+
+### Karar öncelik sırası
+`accept < conditional < revize < reject` — bir bulgu kararı yalnızca yukarı taşır. ŞARTLI = veri sağlam ama sistem tek başına karar veremiyor (TOR aşımı, değerlendirilemeyen sapma); REVİZE = veri bütünlüğü/sıklığı sorunlu.
+
+### Bilinçli olarak yapılmayanlar
+- **Zaman dilimi / yaz saati:** Türkiye 2016'dan beri kalıcı UTC+3; yerel saatle kurulan zaman damgaları Türk eczane verisi için doğru. Yurt dışı logger'ı eklenirse parser tarafında ele alınmalı.
+- **TOR aşımı RED değil ŞARTLI:** ürün bazlı stabilite bütçesi (formüler) dolana kadar RED'e çevrilmemeli.
+- **Eski arayüz (`index.html`, `js/pages/`)** hesaplama olarak yeni motoru kullanır ama etiketleri (0-2 / 8-15, "YETERSİZ VERİ" → hatalı sayma) güncellenmedi; Control Room esas arayüz kabul edildi.
+- Formüler (`js/drug-formulary.js`) hâlâ boş; ürün bazlı kural altyapısı ayrı faz.
+
+## 9. Tek Arayüz: Kontrol Odası (Faz 9 — 10.09.2026)
+
+İki paralel arayüz (eski `index.html` + `js/pages/*` ve Kontrol Odası `app.html` + `ui/*.jsx`) birine indirildi. **Kontrol Odası tek arayüzdür**; Electron paketi de artık onu açar.
+
+### Yapılanlar
+- **Electron → Kontrol Odası.** `main.js` sunucuyu başlatır, `server.start()` dinlemeye geçince port ile çözülen Promise döner, pencere `http://localhost:PORT/app.html` yükler (file:// değil → `/api/*` göreli kalır). Çerçevesiz pencere + IPC pencere düğmeleri kaldırıldı (Kontrol Odası'nın kendi düğmeleri yok; yerel çerçeve). `nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`; dış linkler sistem tarayıcısında açılır.
+- **Denetim İzi sayfası taşındı.** Yeni `ui/cr-audit.jsx`: son 300 kayıt, tür filtresi, hash zinciri doğrulaması (`GET /api/audit/verify`), Excel dışa aktarım. Sol menüye "Denetim İzi" eklendi; avatar menüsündeki "Denetim & Uyum" artık buraya gider.
+- **Ayarlar'daki sahte zincir durumu** ("1.247 kayıt doğrulandı") canlı doğrulamayla değiştirildi; "Denetim zincirini şimdi doğrula" düğmesi çalışır.
+- **Silinenler:** `index.html`, `js/app.js`, `js/state.js`, `js/components.js`, `js/audit-trail.js`, `js/pages/` (5 dosya), `css/` (10 dosya), `js/test-parser.js` (geliştirme harness'ı). `js/utils.js`'teki file:// tabanlı `API_BASE` kaldırıldı.
+- Grafik yakınlaştırma/kaydırma zaten `cr-decisionchart.jsx`'te vardı; ek taşıma gerekmedi.
+
+### Kalan
+- Kontrol Odası hâlâ React/Babel/xlsx/pdf.js'i CDN'den yükler; internetsiz eczanede açılmaz. Sıradaki iş: kütüphaneleri yerelleştirip JSX'i bir kez derlemek.
+- `.github/workflows/test.yml` yalnızca birim test koşar; `electron-builder` derlemesi hâlâ CI'da denenmiyor.
+
+## 10. Çevrimdışı Arayüz: CDN Bağımlılığı Kaldırıldı (Faz 10 — 10.09.2026)
+
+Kontrol Odası açılmak için dört ayrı CDN'e (unpkg, jsdelivr, Google Fonts) muhtaçtı; biri erişilemezse ekran boş kalıyordu. AI (Gemini) ise yalnızca taranmış PDF/görüntü OCR'ı ve yeni PDF formatlarının şema keşfinde gerekir; Excel/CSV, öğrenilmiş şablonlar, MKT, karar, rapor ve denetim izi yereldir. Artık **arayüz her koşulda açılır, AI bir özelliktir**.
+
+### Yapılanlar
+- **`scripts/build-ui.js`** (`npm run build:ui`): node_modules'tan `web/vendor/` altına React + ReactDOM (production UMD), SheetJS, pdf.js (+worker) ve Space Grotesk / JetBrains Mono fontlarını (latin + latin-ext woff2, OFL) kopyalar; `ui/*.jsx` dosyalarını `@babel/preset-react` ile bir kez `web/ui/*.js`'e derler (inline source map). Sürümler `web/vendor/VERSIONS.json`'da. `--watch` ile geliştirme modu (`npm run dev:ui`).
+- **`web/` git'e girmez**; `prestart` / `preapp` / `prebuild` kancaları derlemeyi otomatik koşar. `app.html` yalnızca yerel dosya yükler; tarayıcıda Babel yok, React development yerine production derlemesi (~10× küçük).
+- Derlenmemiş kurulumda sonsuz spinner yerine "npm run build:ui çalıştırın" mesajı.
+- **AI erişilemezken** (`/api/health` → `geminiReady:false` veya sunucu yok) Veri Yükleme sayfasında hangi yolların çalışmaya devam ettiğini söyleyen uyarı; uygulama kapanmaz.
+- CI'a `npm run build:ui` adımı: JSX sözdizimi hatası ve eksik kütüphane paketlemeden önce yakalanır.
+- Doğrulama: sayfa açılışında sıfır dış ağ isteği, fontlar yerelden yüklendi, pdf.js worker yerel yol.
+
+### Not
+- Yeni bağımlılıklar: `react`, `react-dom` (prod), `@babel/core`, `@babel/preset-react`, `@fontsource/*` (dev). `npm ci --ignore-scripts` ile kurulur; native derleme gerekmez.
+
+## 11. Ayarlar Ekranı Gerçek (Faz 11 — 10.09.2026)
+
+Ayarlar ekranı önceden tamamen sahteydi: kaydet düğmelerinin işleyicisi yok, anahtar alanında uydurma bir anahtar, "BAĞLI" ve "1.247 kayıt doğrulandı" sabit metin. İlk kurulumda uygulama içinden API anahtarı girmenin yolu yoktu. Artık iki ayar kaynağı da gerçekten kaydediliyor.
+
+### Sunucu (.env) — `GET/POST /api/settings`, `POST /api/settings/test`
+- Okuma: anahtar var mı + maskeli son 4 hane (düz metin asla dönmez), model, bilinen model/fiyat tablosu, fiyat/kur override durumu, paralellik, `.env` yolu.
+- Yazma: `upsertEnv` mevcut `.env`'yi satır satır günceller (yorumlar ve diğer anahtarlar korunur; boş/null değer satırı siler = varsayılana dön). Doğrulama: anahtar biçimi, model adı, sayısal aralıklar. Yazınca `process.env` güncellenir, `refreshRuntimeConfig()` + `initGemini()` yeniden koşar → **sunucu yeniden başlatılmadan devreye girer**. Her değişiklik denetim zincirine yazılır (anahtar maskeli).
+- Bağlantı testi: kaydetmeden önce verilen anahtar/modelle 4 token'lık "ping"; hata metinleri Türkçeleştirildi (geçersiz anahtar / model yok / ağ).
+- Güvenlik: yazma yalnızca loopback adresinden; CORS joker başlığı kaldırıldı (arayüz artık file:// ile değil aynı kökenden yükleniyor); sunucu `127.0.0.1`'e bağlanır (`HOST` ile değiştirilebilir).
+
+### Yerel analiz varsayılanları — `ui/cc-settings.js` (localStorage)
+- Saklama aralığı, alt/üst limit, TOR bütçesi, azami kayıt aralığı, ΔH. Veri Yükleme sayfası açılışta bunları alır; `engineConfig()` motor konfigürasyonuna iner (`activationEnergy` J/mol, `maxIntervalMinutes`).
+- Motor: `normalizeOptions.maxIntervalMinutes` (varsayılan 60) → `isFrequencyIssue`; karar motoru REVİZE eşiğini buradan okur (eskiden sabit 60).
+
+### Kaldırılanlar
+E-posta/push bildirimi, otomatik Excel, demo gizleme, KVKK saklama süresi, "Görüntü/OCR" ve "Anti-Fraud" anahtarları: hiçbirinin karşılığı yoktu. Etkisi olmayan ayar yanlış güven verir; ihtiyaç olduğunda gerçek uygulamasıyla geri gelir.
+
+Testler: `tests/settings.test.js` (upsertEnv birleştirme, CCSettings sanitize/engineConfig, karar motoru azami aralık) — **311/311**. Uçtan uca: kur yaz → oku → geri al, `.env` byte-byte eski hâline döndü; geçersiz anahtar/model reddedildi; bağlantı testi 805 ms; yerel TOR ayarı Veri Yükleme'ye taşındı.
+
+## 12. Uyum İddiaları Gerçeğe Çekildi (Faz 12 — 10.09.2026)
+
+Arayüz "21 CFR Part 11 / FDA / SHA-256 denetim zinciri" rozetleri taşıyor ama giriş ekranı istemci tarafı taklitti (sabit e-posta/şifre, localStorage anahtarı), API'de hiçbir uç kimlik istemiyordu, denetim zinciri anahtarsız SHA-256 idi (DB'ye erişen herkes zinciri yeniden hesaplayabilirdi) ve eş zamanlı iki kayıt zinciri kalıcı olarak bozuyordu. Bu fazda iddialar ya karşılandı ya da metinden kaldırıldı.
+
+### Kimlik doğrulama ve roller — `auth.js`
+- Sunucu tarafı kullanıcı tablosu (`users`), şifre **scrypt** özeti; oturum **HttpOnly + SameSite=Strict** çerez (12 sa kayan, "beni hatırla" 7 gün). Oturumlar bellek içi (süreç yeniden başlayınca yeniden giriş).
+- Roller: **admin** (ayarlar, şablon silme, kullanıcı yönetimi) · **qa** (analiz, onay, rapor, denetim izi). `/api/*` — health ve auth/status|setup|login hariç — oturum ister; 401 dönen her çağrıda arayüz giriş ekranına döner.
+- İlk çalıştırma: hiç kullanıcı yoksa giriş ekranı "İlk kurulum" moduna geçer ve ilk yöneticiyi oluşturur (yalnızca loopback). Sonraki kullanıcılar Ayarlar › Kullanıcılar'dan (geçici şifre, ilk girişte değiştirme). Herkes kendi şifresini Ayarlar › Hesabım'dan değiştirir.
+- Başarısız giriş: IP başına 5 deneme → 15 dk kilit; her giriş/çıkış/başarısız deneme/kullanıcı değişikliği denetim zincirinde. Denetim kayıtlarındaki kimlik artık **istemciden değil oturumdan** gelir.
+- Şifre politikası: ≥ 8 karakter, harf + rakam. Son etkin yönetici düşürülemez/pasifleştirilemez; kullanıcı kendini pasifleştiremez.
+
+### İmzalı ve yarışsız denetim zinciri — `database.js`
+- Hash artık **HMAC-SHA256**; anahtar `audit.key` (userData, 0600, DB'den ayrı). Anahtar olmadan satırlar yeniden hesaplanıp zincir "tamir" edilemez. Eski düz SHA-256 satırlar `legacyCount` olarak ayrı raporlanır (zincir bütünlüğü korunur).
+- Zincir başı `audit.head.json` (son id + hash): sondan satır silme artık `headMismatch` ile yakalanır.
+- Yazmalar sıralı kuyrukta: eş zamanlı iki kayıt aynı `prev_hash`'i alamaz.
+- **Sınır:** diske tam erişimi olan biri anahtarı da alır; bu zincir, "DB anahtar olmadan düzenlenmedi" garantisi verir, donanım güvenlik modülü değildir.
+
+### İçerik güvenlik politikası ve sunucu sertleştirme — `server.js`
+- CSP: `script-src 'self'`, `connect-src 'self'`, `frame-ancestors 'none'`…; satır içi önyükleme `ui/cc-boot.js`'e taşındı, `onerror` öznitelikleri kaldırıldı. `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
+- Statik sunumda `.env`, `*.db`, `audit.key`, sunucu kaynakları, `node_modules/`, `tests/`, `scripts/` → 404 (geliştirmede veritabanı dosyası tarayıcıdan indirilebiliyordu).
+- Genel hata yakalayıcı: multer boyut/tür ve JSON hataları yığın izi yerine JSON; iç ayrıntı sızmaz.
+- Gemini çağrılarına istek zaman aşımı (`GEMINI_TIMEOUT_MS`, varsayılan 180 sn): asılı çağrı işçiyi sonsuza dek tutmaz.
+- KVKK: sunucu konsoluna dosya adı (eczane/kişi adı taşıyabilir) yerine tür + boyut + kullanıcı yazılır.
+
+### Metinler
+- "GDP / 21 CFR Part 11", "FDA" rozetleri kaldırıldı; yerine doğru olan yazıldı: **TİTCK GDP odaklı karar motoru**, **imzalı hash-zincirli denetim izi**, KVKK rozetinde "OCR için belge görüntüsü Google Gemini'ye gönderilir" açıklaması. Sabit "Elif Aydın" avatarı gerçek oturum kullanıcısıyla değişti; demo hesap kutusu ve ekrana basılı şifre kaldırıldı.
+
+### Yapılmayan / kalan
+- Belge görüntülerinde eczane adı/seri maskelenmez (piksel düzeyinde pratik değil; OCR değeri olan alanlar). Karşı önlem açıklama + rızadır: Veri Yükleme'ye tek seferlik KVKK bildirimi ve analiz silme/saklama süresi (purge) sıradaki iş.
+- Oturumlar bellek içi; çok süreçli/yeniden başlayan kurulumda kalıcı oturum gerekir.
+- Testler: `tests/auth.test.js` (scrypt, çerez, oturum ömrü, kilit, uçtan uca kurulum→giriş→rol→çıkış sahte DB ile) — **319/319**. Tarayıcıda: ilk kurulum, yanlış şifre, giriş, kullanıcı ekleme, zincir doğrulaması (5 imzalı + 12 eski satır, baş eşleşiyor), 401 → giriş ekranı; CSP ihlali yok.
+
+## 13. KVKK: Bildirim, Silme ve Saklama Süresi (Faz 13 — 10.09.2026)
+
+Belge görüntülerinde eczane adı/cihaz serisi piksel düzeyinde maskelenemez (OCR'ın okuması gereken alanlar). KVKK'nın gerçek karşılığı: **açıklama + onay + silme hakkı + saklama süresi**. Bu fazda üçü de uygulandı.
+
+- **Tek seferlik KVKK bildirimi** (`ui/cr-upload.jsx`): Veri Yükleme'de, kullanıcı başına bir kez. Ne yerelde tutulur, hangi durumda belge görüntüsü Google Gemini'ye gider (yalnızca taranmış PDF/fotoğraf ve tanınmayan PDF formatı), nasıl silinir/ne kadar saklanır. Onaylanmadan "ANALİZİ BAŞLAT" kilitli ("KVKK ONAYI GEREKLİ"). Onay `users.kvkk_ack_at`'e zaman damgasıyla yazılır (`POST /api/auth/kvkk-ack`) ve denetim zincirine düşer.
+- **Analiz silme** (`DELETE /api/analyses/:id`, admin): analiz + ham seri + cihaz seri kaydı silinir; denetim izine kim/ne/ne zaman yazılır (silinen kaydın özeti). Kontrol Paneli'nde admin için satır başına iki aşamalı sil düğmesi.
+- **Saklama süresi** (`RETENTION_DAYS`, Ayarlar › Veri Bütünlüğü; 0 = sınırsız): süreyi aşan analizler, ham seriler ve cihaz seri kayıtları açılıştan 20 sn sonra ve her 24 saatte bir otomatik silinir (`runRetentionPurge`); "Şimdi temizle" düğmesi (`POST /api/maintenance/purge`, admin). Her temizlik denetim zincirine yazılır. **Denetim izi silinmez** — yasal izlenebilirlik.
+- Ayarlar'daki imza alanı gerçek değeri gösterir (HMAC-SHA256 + eski satır sayısı).
+
+Testler: `retentionCutoffISO` (**320/320**). Tarayıcıda: bildirim → onay → `kvkkAckAt` doldu, bildirim kalktı; kayıt oluştur → sil → ham seri 404, ikinci silme 404, denetim kaydı; saklama 3650 gün → temizlik 0 kayıt → sınırsıza dön (`.env` eski hâline döndü); panelde admin sil sütunu.
+
+### Kalan
+- Purge ve silme SQL'i CI'da test edilmiyor (sqlite3 `--ignore-scripts` ile kurulmuyor); yalnızca yerelde uçtan uca doğrulandı.
+- Denetim izinde eczane adı/ilaç adı metin olarak kalır (silinen kaydın özeti). Bu bilinçli: silme işleminin kendisi izlenebilir olmalı.
+
+## 14. Bağımlılıklar, Paketleme, Yedekleme, README, Tek Sürüm (Faz 14 — 10.09.2026)
+
+### Bağımlılıklar
+| Eski | Yeni | Neden |
+|---|---|---|
+| `@google/generative-ai` 0.21 (kullanımdan kaldırıldı) | `@google/genai` 2.x + `gemini-client.js` sarmalayıcısı | Çağrı noktaları (`getGenerativeModel` / `generateContent` / `text()` / `usageMetadata` / `finishReason`) aynı yüzeyle korundu; istek zaman aşımı `httpOptions.timeout`. Gerçek OCR ile uçtan uca doğrulandı (6 satır, 1.218 token). |
+| `xlsx` 0.18.5 (npm, düzeltmesi olmayan açıklar) | SheetJS 0.20.3 (resmi CDN tarball, devDependency) | API aynı; tarayıcıya `web/vendor/xlsx.full.min.js` olarak kopyalanır. |
+| `multer` 1.x (ömrü doldu) | `multer` 2.3 | Bellek depolama API'si aynı. |
+| `canvas` + `vision-helper.js` | kaldırıldı | Ölü kod; asar içinde kırılan tek native modüldü. |
+| `react`, `react-dom`, `pdfjs-dist` (prod) | devDependencies | Yalnızca derleme sırasında `web/vendor`'a kopyalanır; kurulum paketine node_modules'tan girmez. |
+
+`npm audit fix` sonrası üretim bağımlılıklarında kalan 9 uyarının tamamı `sqlite3 → node-gyp 8` **kurulum araç zinciri**nden (brace-expansion, ip-address, tar, @tootallnate/once); çalışma zamanında yüklenmez, önceden derlenmiş ikili kullanılır. Kalıcı çözüm `better-sqlite3` geçişi (ayrı iş). `electron` 41.0.2'de bırakıldı (patch yükseltmesi ikili indirme ister; yerelde `npm rebuild electron` ile).
+
+### Paketleme
+- `package.json build.files` allowlist: yalnızca çalışma zamanı dosyaları (`main/server/database/auth/gemini-client/pdf-helper/date-format-detector.js`, `app.html`, `js/`, `ui/*.js`, `web/`); `ui/*.jsx`, `tests/`, `scripts/`, `.env`, `*.db`, `audit.*`, `backups/` dışarıda. `asarUnpack: **/*.node`.
+- CI'a **Windows paketleme provası** eklendi: `npm ci` (native derleme dahil) + `electron-builder --win --dir` + asar içeriği doğrulaması (gereken dosyalar var, girmemesi gerekenler yok) + artefakt.
+
+### Yedekleme
+- `POST /api/maintenance/backup` (admin) ve günlük otomatik (`BACKUP_AUTO=0` kapatır, `BACKUP_KEEP` varsayılan 7): `backups/<zaman damgası>/` altına **`VACUUM INTO`** ile tutarlı DB anlık görüntüsü + `audit.key` + `audit.head.json` + `MANIFEST.json` (geri yükleme talimatı). `.env` (API anahtarı) yedeğe girmez. Her yedek denetim izine yazılır; Ayarlar'da "Şimdi yedekle" ve son yedek bilgisi.
+
+### Tek sürüm kaynağı
+`package.json` `version` → sunucu (`/api/health`, açılış logu) ve arayüz (`web/version.js` → `window.CC_VERSION`; giriş ekranı, rapor, sertifika). 2.0.0 / 3.2.0-hybrid / v2.1 karmaşası bitti: **3.3.0**.
+
+### README
+Kurulum, komutlar, mimari şema, veri konumları, yedekleme/geri yükleme, KVKK ve ortam değişkenleri.
+
+Testler: `tests/gemini-client.test.js` (**324/324**).

@@ -23,7 +23,7 @@ window.CCPipeline = (function () {
     return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   }
   function fmtDur(min) {
-    if (window.Utils && Utils.formatDuration) return Utils.formatDuration(min || 0);
+    if (typeof Utils !== 'undefined' && Utils.formatDuration) return Utils.formatDuration(min || 0);
     return Math.round(min || 0) + ' dk';
   }
 
@@ -42,20 +42,30 @@ window.CCPipeline = (function () {
       .filter(p => isFinite(p.timestamp.getTime()) && isFinite(p.temperature))
       .sort((a, b) => a.timestamp - b.timestamp);
 
-    const r = (window.MKTEngine && MKTEngine.retrospectiveMKTCheck)
-      ? MKTEngine.retrospectiveMKTCheck(series, lo, hi)
-      : { triggered: false, hasProblem: false, problemCount: 0, excursionCount: 0, windows: [] };
+    // Motor yoksa ASLA "sorun yok" deme — UI'da açıkça "kontrol yapılamadı" gösterilir.
+    const hasEngine = typeof MKTEngine !== 'undefined' && typeof MKTEngine.retrospectiveMKTCheck === 'function';
+    if (!hasEngine || !series.length) {
+      return { engineMissing: !hasEngine, noData: !series.length, triggered: false, hasProblem: false, problemCount: 0, insufficientCount: 0, excursionCount: 0, windows: [], lo, hi };
+    }
+    const r = MKTEngine.retrospectiveMKTCheck(series, lo, hi);
 
     const windows = (r.windows || []).map(w => ({
       type: w.type,
       peak: w.peakTemp,
       mkt24h: w.mkt24h,
       isOk: w.isOk,
+      status: w.status || (w.isOk ? 'ok' : 'bad'),
+      freeze: !!w.freeze,
+      classification: w.classification || 'normal',
+      insufficient: !!w.insufficientData,
+      insufficientWhy: w.insufficientWhy || null,
       coverageH: w.coverageHours,
+      coverage: fmtDur(Math.round((w.coverageHours || 0) * 60)),
+      excRange: fmtDT(w.excursionStart) + ' → ' + fmtDT(w.excursionEnd),
       range: fmtDT(w.windowStart) + ' → ' + fmtDT(w.windowEnd),
     }));
 
-    return { triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, excursionCount: r.excursionCount, windows, lo, hi };
+    return { engineMissing: false, noData: false, triggered: r.triggered, hasProblem: r.hasProblem, problemCount: r.problemCount, freezeCount: r.freezeCount || 0, insufficientCount: r.insufficientCount || 0, transientCount: r.transientCount || 0, excursionCount: r.excursionCount, windows, lo, hi };
   }
   window.CCRetro = buildRetro;
 
@@ -79,12 +89,16 @@ window.CCPipeline = (function () {
       temp.push({ t: ts, v: p.temperature });
     }
 
-    // Isı maruziyet dağılımı (time-in-range)
+    // Isı maruziyet dağılımı (time-in-range) — kritik eşikler motor konfigürasyonundan
+    // (2-8 için 0 / 15; başka aralıklar için aralığa göre türetilir)
+    const engCfg = a.config || {};
+    const critLo = Number.isFinite(Number(engCfg.criticalLow)) ? Number(engCfg.criticalLow) : lo - 2;
+    const critHi = Number.isFinite(Number(engCfg.criticalHigh)) ? Number(engCfg.criticalHigh) : hi + 7;
     let ideal = 0, warn = 0, crit = 0;
     data.forEach(p => {
       const v = p.temperature;
       if (v >= lo && v <= hi) ideal++;
-      else if ((v >= 0 && v < lo) || (v > hi && v <= 15)) warn++;
+      else if ((v >= critLo && v < lo) || (v > hi && v <= critHi)) warn++;
       else crit++;
     });
     const tot = n || 1;
@@ -93,8 +107,11 @@ window.CCPipeline = (function () {
     // sapmalar
     const exc = (a.excursions && a.excursions.excursions) || [];
     const excursions = exc.map(e => ({
-      start: fmtDT(e.start), end: fmtDT(e.end), dur: fmtDur(e.duration),
+      start: fmtDT(e.start), end: fmtDT(e.end), dur: fmtDur(e.duration), durMin: Number(e.duration) || 0,
+      // Mutlak zaman (ms): raporda "Belgede göster" kaynak belgede bu aralığı arar
+      t0: new Date(e.start).getTime(), t1: new Date(e.end).getTime(),
       type: e.type || 'high', peak: e.peakTemp != null ? e.peakTemp : (e.startTemp || 0),
+      transient: !!e.transient, freeze: !!e.freeze, critical: !!e.critical, classification: e.classification || 'normal',
     }));
 
     // Veri kaybı pencereleri: mutlak başlangıç/bitiş timestamp'i (ms)
@@ -108,7 +125,11 @@ window.CCPipeline = (function () {
 
     return {
       key: 'real', decision: engDec, label: LABELS[engDec] || '—', conf: dec.confidence || 0,
-      lo: lo, hi: hi,
+      lo: lo, hi: hi, critLo, critHi,
+      freezeLimit: engCfg.freezeLimit != null ? engCfg.freezeLimit : null,
+      mktMethod: mkt.method || 'unweighted',
+      torUnknownMin: Math.round((a.tor && a.tor.unknownGapMinutes) || 0),
+      transientCount: (a.excursions && a.excursions.transientCount) || 0,
       pharmacy: form.pharmacy || 'Belirtilmemiş', city: form.city || '',
       drug: form.drug || 'Belirtilmemiş', serial: form.serial || a.deviceSerial || '—',
       batch: form.batch || '—', barcode: form.barcode || '—', expiry: form.expiry || '—',
@@ -162,6 +183,9 @@ window.CCPipeline = (function () {
           resampling: false,
           onProgress: (p) => { virtual = Math.max(virtual, p); onFile(item.id, virtual, 'işleniyor'); },
           columnMapping: item.columnMapping,
+          // Güven skorunun sıcaklık-makullük bandı seçilen aralığa göre genişler
+          // (ultra soğuk −80…−60 ürünler her seferinde incelemeye düşmesin)
+          limits: { lowerLimit: Number(cfg.lowerLimit), upperLimit: Number(cfg.upperLimit) },
           // Şablon hafızası (Faz 4): UI'da hesaplanan parmak izi + eşleşme
           // bilgisi IR'a iner; bulanık eşleşme onay kapısını tetikler. Bu akış
           // Faz 3 kapısına sahip olduğundan bulanık şablona izin verilir.
@@ -194,7 +218,7 @@ window.CCPipeline = (function () {
         const reviews = pending.map(p => {
           const idx = files.findIndex(f => f.id === p.id);
           const rows = (idx >= 0 && parsed[idx].parsedData) || [];
-          const sample = (window.Utils && Utils.sampleRows ? Utils.sampleRows(rows, 10) : rows.slice(0, 10).map((row, index) => ({ index, row })))
+          const sample = (typeof Utils !== 'undefined' && Utils.sampleRows ? Utils.sampleRows(rows, 10) : rows.slice(0, 10).map((row, index) => ({ index, row })))
             .map(s => ({
               index: s.index,
               date: fmtFullDT(s.row.timestamp),
@@ -215,7 +239,37 @@ window.CCPipeline = (function () {
               raw: x.row.rawText || '',
               page: x.row.page || null,
             }));
-          return { ...p, sample, rowCount: rows.length, lowConfRows };
+
+          // Faz 7: AI doğrulama uyuşmazlıkları + kanıt kontrolü kanıtsızları
+          // aynı düzenlenebilir ızgaraya iner (AI önerisi/not alanlarıyla).
+          // idx'ler postProcess-sonrası dizi indeksidir — rowEdits ile birebir.
+          const ext = (idx >= 0 && parsed[idx].metadata && parsed[idx].metadata.extraction) || {};
+          const flagged = new Map(lowConfRows.map(r => [r.idx, r]));
+          const pushFlag = (index, suggested, note) => {
+            if (typeof index !== 'number' || index < 0 || index >= rows.length) return;
+            let entry = flagged.get(index);
+            if (!entry) {
+              if (flagged.size >= 40) return;
+              const row = rows[index];
+              entry = {
+                idx: index,
+                date: fmtFullDT(row.timestamp),
+                temp: row.temperature,
+                conf: typeof row.confidence === 'number' ? row.confidence : null,
+                raw: row.rawText || '',
+                page: row.page || null,
+              };
+              flagged.set(index, entry);
+            }
+            if (suggested && entry.suggested === undefined) entry.suggested = suggested;
+            if (note && !entry.note) entry.note = note;
+          };
+          (((ext.verification || {}).mismatches) || []).forEach(m =>
+            pushFlag(m.rowIndex, m.suggested, m.note || 'AI doğrulaması: ham satırla uyuşmuyor'));
+          (((ext.evidence || {}).missingRows) || []).forEach(m =>
+            pushFlag(m.arrayIndex, undefined, 'Kanıt kontrolü: değer ham satırda bağımsız sayı olarak bulunamadı'));
+          const mergedLowConf = Array.from(flagged.values()).sort((a, b) => a.idx - b.idx);
+          return { ...p, sample, rowCount: rows.length, lowConfRows: mergedLowConf };
         });
         onStep({
           ic: 'alert', t: 'HITL_GATE',
@@ -258,6 +312,9 @@ window.CCPipeline = (function () {
 
     // 4) MKT + karar
     const cfg2 = { lowerLimit: Number(cfg.lowerLimit) || 2, upperLimit: Number(cfg.upperLimit) || 8, torLimit: Number(cfg.torLimit) || 120 };
+    // Ayarlar ekranından gelen motor parametreleri (varsa): azami kayıt aralığı, ΔH
+    if (isFinite(Number(cfg.maxIntervalMinutes)) && Number(cfg.maxIntervalMinutes) > 0) cfg2.maxIntervalMinutes = Number(cfg.maxIntervalMinutes);
+    if (isFinite(Number(cfg.activationEnergy)) && Number(cfg.activationEnergy) > 0) cfg2.activationEnergy = Number(cfg.activationEnergy);
     const rawValidation = parsed.length === 1 ? (parsed[0].metadata && parsed[0].metadata.validation) : null;
     const analysis = MKTEngine.fullAnalysis(allData, cfg2, rawValidation);
     onStep({ ic: 'check', t: 'VALIDATE', tx: 'Doğrulama — zaman serisi bütünlüğü onaylandı', st: 'ok' });
@@ -268,7 +325,7 @@ window.CCPipeline = (function () {
     // 5) Cihaz seri no mükerrer kontrolü (backend)
     const deviceSerial = (analysis.metadata && analysis.metadata.deviceSerial) || form.serial;
     let primaryFileHash = null;
-    if (deviceSerial && files[0] && files[0].file && window.Utils && Utils.sha256OfBytes) {
+    if (deviceSerial && files[0] && files[0].file && typeof Utils !== 'undefined' && Utils.sha256OfBytes) {
       try {
         const buf = await files[0].file.arrayBuffer();
         primaryFileHash = await Utils.sha256OfBytes(buf);
@@ -282,7 +339,7 @@ window.CCPipeline = (function () {
     }
 
     const decision = DecisionEngine.evaluate(analysis);
-    onStep({ ic: 'thermo', t: 'MKT', tx: `MKT ${analysis.mkt.mkt}°C · TOR ${Math.round(analysis.tor.torMinutes)} dk hesaplandı`, st: 'ok' });
+    onStep({ ic: 'thermo', t: 'MKT', tx: `MKT ${analysis.mkt.mkt}°C (${analysis.mkt.method === 'time-weighted' ? 'zaman ağırlıklı' : 'eşit ağırlık'}) · TOR ${Math.round(analysis.tor.torMinutes)} dk hesaplandı`, st: 'ok' });
 
     if (deviceSerial && primaryFileHash) {
       fetch('/api/device-serial', {
@@ -352,6 +409,14 @@ window.CCPipeline = (function () {
       // şablon ailesine işaret eder → yeniden kaydedilmez.
       if (ext.template && (ext.template.match === 'exact' || ext.template.match === 'structural')) continue;
       if (optOut[files[i].id]) continue;
+      // Faz 7: doğrulamadan geçemeyen şema OTOMATİK yoldan hafızaya alınmaz —
+      // kötü şablonun "bilinen format" olarak kalıcılaşması engellenir.
+      // İnsan onayından geçen belge (hitl-onay) kaydedilebilir; onay ekranında
+      // "formatı hatırla" kutusu kullanıcının elindedir.
+      const failedVerification =
+        (ext.verification && Array.isArray(ext.verification.mismatches) && ext.verification.mismatches.length > 0)
+        || (ext.evidence && ext.evidence.missing >= 3);
+      if (failedVerification && !approved.has(files[i].id)) continue;
       fetch('/api/templates', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -162,7 +162,7 @@
   .cr-empty{padding:26px 16px;text-align:center;font-size:12px;color:var(--t3);}
   `;
 
-  const NAVS = [['dashboard', 'grid', 'Kontrol Paneli'], ['upload', 'upload', 'Veri Yükleme'], ['analysis', 'activity', 'Analiz & Karar'], ['report', 'report', 'Rapor'], ['templates', 'box', 'Şablon Hafızası'], ['settings', 'cog', 'Ayarlar']];
+  const NAVS = [['dashboard', 'grid', 'Kontrol Paneli'], ['upload', 'upload', 'Veri Yükleme'], ['bexflow', 'mail', 'BexFlow İadeleri'], ['analysis', 'activity', 'Analiz & Karar'], ['report', 'report', 'Rapor'], ['templates', 'box', 'Şablon Hafızası'], ['audit', 'shield', 'Denetim İzi'], ['settings', 'cog', 'Ayarlar']];
 
   const NOTIFS = [
     { ic: 'alert', tone: 'bad', t: 'MKT ihlali — Şifa Eczanesi', d: 'Cihaz NN-3344-B 11,8°C pik yaptı · iade reddi önerildi', ago: '4 dk önce', unread: true },
@@ -172,6 +172,7 @@
   ];
   const ntTone = t => ({ ok: ['var(--ok)', 'var(--okS)'], warn: ['var(--amber)', 'var(--amberS)'], bad: ['var(--bad)', 'var(--badS)'], sig: ['var(--sig)', 'var(--sigS)'] }[t]);
   const pad2 = n => String(n).padStart(2, '0');
+  const ROLE_LABEL = { admin: 'Yönetici', qa: 'Kalite Güvence (QA)' };
 
   const tone = t => ({ ok: ['var(--ok)', 'var(--okS)'], warn: ['var(--amber)', 'var(--amberS)'], rev: ['var(--rev)', 'var(--revS)'], bad: ['var(--bad)', 'var(--badS)'] }[t]);
   function Badge({ decision }) { const m = DM[decision]; const [c, s] = tone(m.tone); return <span className="cr-bd" style={{ color: c, background: s }}><i style={{ background: c }} />{m.tr}</span>; }
@@ -200,6 +201,9 @@
     }, []);
 
     const clock = `${pad2(now.getDate())}.${pad2(now.getMonth() + 1)}.${now.getFullYear()} · ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    // Oturum kullanıcısı (sunucudan; cr-app.jsx window.CCAuth.user'a yazar)
+    const u = (window.CCAuth && window.CCAuth.user) || {};
+    const initials = String(u.name || u.email || '?').split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('') || '?';
     const unread = NOTIFS.filter(n => n.unread).length;
     const ql = q.trim().toLowerCase();
     const results = ql ? CCData.analyses.filter(a => (a.pharmacy + ' ' + a.drug + ' ' + a.serial + ' ' + a.city).toLowerCase().includes(ql)).slice(0, 6) : [];
@@ -223,7 +227,7 @@
                 </button>;
               })}
             </div>
-            {!collapsed && <div className="cr-badges" style={{ display: 'flex', gap: 6 }}>{['GDP', 'FDA', 'KVKK'].map(b => <span key={b} className="cr-chip cr-up" style={{ flex: 1, textAlign: 'center' }}>{b}</span>)}</div>}
+            {!collapsed && <div className="cr-badges" style={{ display: 'flex', gap: 6 }}>{['TİTCK GDP', 'KVKK'].map(b => <span key={b} className="cr-chip cr-up" style={{ flex: 1, textAlign: 'center' }} title={b === 'KVKK' ? 'Veriler yerel; OCR için belge görüntüsü Google Gemini\'ye gönderilir' : 'TİTCK İyi Dağıtım Uygulamaları kılavuzu odaklı karar motoru'}>{b}</span>)}</div>}
           </div>
         </aside>
         <div className="cr-main">
@@ -268,16 +272,16 @@
             </div>
 
             <div className="cr-wrap">
-              <div className="cr-av" style={{ cursor: 'pointer' }} onClick={() => setMenu(m => m === 'avatar' ? null : 'avatar')}>EA</div>
+              <div className="cr-av" style={{ cursor: 'pointer' }} onClick={() => setMenu(m => m === 'avatar' ? null : 'avatar')} title={u.email}>{initials}</div>
               {menu === 'avatar' && (
                 <div className="cr-dd" style={{ right: 0, width: 250 }}>
                   <div className="cr-mhd">
-                    <span className="cr-mav">EA</span>
-                    <div style={{ minWidth: 0 }}><div className="cr-mnm">Elif Aydın</div><div className="cr-mrl">Kalite Güvence (QA)</div><div className="cr-mml">elif.aydin@coldchain.ai</div></div>
+                    <span className="cr-mav">{initials}</span>
+                    <div style={{ minWidth: 0 }}><div className="cr-mnm">{u.name || u.email || 'Kullanıcı'}</div><div className="cr-mrl">{ROLE_LABEL[u.role] || u.role || ''}</div><div className="cr-mml">{u.email || ''}</div></div>
                   </div>
-                  <div className="cr-mi"><Ic.user size={16} /> Profilim</div>
+                  <div className="cr-mi" onClick={() => { setMenu(null); onNav('settings'); }}><Ic.user size={16} /> Profilim / Şifre</div>
                   <div className="cr-mi" onClick={() => { setMenu(null); onNav('settings'); }}><Ic.cog size={16} /> Ayarlar</div>
-                  <div className="cr-mi"><Ic.shield size={16} /> Denetim & Uyum</div>
+                  <div className="cr-mi" onClick={() => { setMenu(null); onNav('audit'); }}><Ic.shield size={16} /> Denetim & Uyum</div>
                   <div style={{ borderTop: '1px solid var(--ln)' }} />
                   <div className="cr-mi danger" onClick={() => { setMenu(null); window.dispatchEvent(new CustomEvent('cc-logout')); }}><Ic.logout size={16} /> Çıkış Yap</div>
                 </div>
@@ -295,7 +299,21 @@
   function CRDashboard({ theme, onNav = () => {} }) {
     const [sel, setSel] = useState(null);
     const [live, setLive] = useState(null); // {analyses, stats} — DB'den
+    const [reloadKey, setReloadKey] = useState(0);
+    const [armedDel, setArmedDel] = useState(null); // iki aşamalı silme (KVKK, yalnızca admin)
+    const [delMsg, setDelMsg] = useState(null);
     const d = CCData;
+    const isAdmin = ((window.CCAuth && window.CCAuth.user) || {}).role === 'admin';
+    const delAnalysis = async (a) => {
+      setDelMsg(null);
+      try {
+        const r = await fetch('/api/analyses/' + a.id, { method: 'DELETE' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.error || 'Silinemedi.');
+        setArmedDel(null); setSel(null); setDelMsg({ ok: true, text: `#${a.id} silindi (${a.pharmacy} · ${a.drug}). Denetim izine yazıldı.` });
+        setReloadKey(k => k + 1);
+      } catch (e) { setDelMsg({ ok: false, text: e.message }); }
+    };
 
     useEffect(() => {
       let alive = true;
@@ -305,7 +323,7 @@
       ]).then(([ra, st]) => {
         if (!alive) return;
         const rows = ra && ra.success && Array.isArray(ra.data) ? ra.data : [];
-        if (!rows.length) return; // DB boş → demo kalır
+        if (!rows.length) { if (reloadKey > 0) setLive({ analyses: [], stats: (st && st.success && st.data) || {} }); return; } // ilk yükte DB boş → demo kalır; silme sonrası boş liste
         const analyses = rows.map(r => {
           let reasons = [];
           try { reasons = JSON.parse(r.reasons || '[]'); } catch (e) {}
@@ -321,7 +339,7 @@
         setLive({ analyses, stats: sd });
       });
       return () => { alive = false; };
-    }, []);
+    }, [reloadKey]);
 
     const isLive = !!live;
     const analyses = isLive ? live.analyses : d.analyses;
@@ -406,11 +424,12 @@
         </div>
         <div className="cr-pn">
           <div className="cr-ph"><div className="cr-pt">İADE KAYIT AKIŞI{isLive && <span className="cr-chip" style={{ marginLeft: 8, color: 'var(--ok)', background: 'var(--okS)', borderColor: 'var(--ok)' }}>CANLI</span>}</div><div className="cr-phr">{!isLive && <span className="cr-phbd">placeholder</span>}<span className="cr-up" style={{ color: 'var(--t3)' }}>SON {analyses.length} KAYIT</span></div></div>
+          {delMsg && <div style={{ margin: '10px 14px 0', padding: '8px 12px', borderRadius: 8, fontSize: 12, border: '1px solid ' + (delMsg.ok ? 'var(--ok)' : 'var(--bad)'), color: delMsg.ok ? 'var(--ok)' : 'var(--bad)' }}>{delMsg.text}</div>}
           <table className="cr-t">
-            <thead><tr>{['Zaman', 'Eczane', 'İlaç', 'Seri', 'MKT', 'TOR', 'Karar'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+            <thead><tr>{['Zaman', 'Eczane', 'İlaç', 'Seri', 'MKT', 'TOR', 'Karar'].concat(isLive && isAdmin ? [''] : []).map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
             <tbody>
               {analyses.length === 0 ? (
-                <tr><td colSpan={7} style={{ textAlign: 'center', padding: '34px 0', color: 'var(--t2)' }}>Henüz kayıt yok — ilk analizi oluşturup kaydedin.</td></tr>
+                <tr><td colSpan={8} style={{ textAlign: 'center', padding: '34px 0', color: 'var(--t2)' }}>Henüz kayıt yok — ilk analizi oluşturup kaydedin.</td></tr>
               ) : analyses.map(a => { const ok = a.mkt >= 2 && a.mkt <= 8; return (
                 <tr key={a.id} onClick={() => setSel(a)}>
                   <td className="cr-m" style={{ color: 'var(--t2)' }}>{CCFmt.fmtTime(a.ts)}</td>
@@ -420,6 +439,18 @@
                   <td className="cr-m" style={{ fontWeight: 600, color: ok ? 'var(--ok)' : 'var(--bad)' }}>{a.mkt.toFixed(2)}°</td>
                   <td className="cr-m" style={{ color: a.tor != null && a.tor > 180 ? 'var(--bad)' : 'var(--t2)' }}>{a.tor != null ? a.tor : '—'}</td>
                   <td><Badge decision={a.decision} /></td>
+                  {isLive && isAdmin && (
+                    <td onClick={e => e.stopPropagation()} style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
+                      {armedDel === a.id ? (
+                        <span style={{ display: 'inline-flex', gap: 6 }}>
+                          <button className="cr-btn" style={{ padding: '4px 10px', fontSize: 11, background: 'var(--bad)', color: '#fff' }} onClick={() => delAnalysis(a)} title="KVKK: kayıt, ham seri ve cihaz seri kaydı silinir; denetim izine yazılır">Sil (onayla)</button>
+                          <button className="cr-btn cr-btn2" style={{ padding: '4px 10px', fontSize: 11 }} onClick={() => setArmedDel(null)}>Vazgeç</button>
+                        </span>
+                      ) : (
+                        <button className="cr-btn cr-btn2" style={{ padding: '4px 10px', fontSize: 11, color: 'var(--t3)' }} onClick={() => setArmedDel(a.id)} title="Kaydı sil (KVKK)"><Ic.x size={13} /></button>
+                      )}
+                    </td>
+                  )}
                 </tr>); })}
             </tbody>
           </table>

@@ -90,12 +90,92 @@ describe('ConfidenceScore.compute — sıcaklık makullüğü ve az veri', () =>
         assert.ok(r.factors.some(f => f.factor === 'sicaklik-makullugu'));
     });
 
+    test('bant ihlali ≥%10 sert kapı: skor eşik üstünde de olsa inceleme zorunlu', () => {
+        const temps = Array(85).fill(5).concat(Array(15).fill(128)); // %85 makul
+        const r = ConfidenceScore.compute(cleanSignals({ temperatures: temps }));
+        assert.ok(r.score >= 70); // kesinti küçük...
+        assert.equal(r.needsReview, true); // ...ama kapı kapanmaz
+    });
+
     test('10 satırdan az veri 10 puan düşürür', () => {
         const r = ConfidenceScore.compute(cleanSignals({
             totalCandidates: 5, parsedRows: 5, temperatures: Array(5).fill(5)
         }));
         assert.equal(r.score, 90);
         assert.ok(r.factors.some(f => f.factor === 'az-veri'));
+    });
+});
+
+describe('ConfidenceScore.compute — kanıt kontrolü (Tier 0)', () => {
+    test('tüm satırlar kanıtsız → ağır kesinti + zorunlu inceleme', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            evidence: { checked: 100, missing: 100, skippedNoRaw: 0, temporalOutliers: 0 }
+        }));
+        assert.equal(r.score, 60); // min(40, 1*200) = 40
+        assert.equal(r.needsReview, true);
+        assert.ok(r.factors.some(f => f.factor === 'kanit-kontrolu'));
+    });
+
+    test('3 kanıtsız satır oran düşük olsa da kapıyı kapatır', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            evidence: { checked: 100, missing: 3, skippedNoRaw: 0 }
+        }));
+        assert.ok(r.score >= 90);
+        assert.equal(r.needsReview, true);
+    });
+
+    test('tek kanıtsız satır: yalnız kesinti, kapı yok', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            evidence: { checked: 100, missing: 1, skippedNoRaw: 0 }
+        }));
+        assert.equal(r.needsReview, false);
+        assert.ok(r.factors.some(f => f.factor === 'kanit-kontrolu'));
+    });
+
+    test('kanıt temizse faktör yok', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            evidence: { checked: 100, missing: 0, skippedNoRaw: 0 }
+        }));
+        assert.equal(r.score, 100);
+        assert.equal(r.needsReview, false);
+    });
+
+    test('3+ zaman aykırısı zorunlu inceleme tetikler', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            evidence: { checked: 100, missing: 0, temporalOutliers: 3 }
+        }));
+        assert.equal(r.needsReview, true);
+        assert.ok(r.factors.some(f => f.factor === 'zaman-tutarliligi'));
+    });
+});
+
+describe('ConfidenceScore.compute — AI doğrulaması (Tier 1)', () => {
+    test('uyuşmazlık → kesinti + zorunlu inceleme', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            verification: { checked: 10, mismatches: [{ rowIndex: 3 }, { rowIndex: 7 }] }
+        }));
+        assert.equal(r.score, 80); // min(30, 2/10*100) = 20
+        assert.equal(r.needsReview, true);
+        assert.ok(r.factors.some(f => f.factor === 'ai-dogrulama'));
+    });
+
+    test('doğrulama atlandıysa (çevrimdışı) 0 kesintili bilgi faktörü', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            verification: { skipped: true, reason: 'offline' }
+        }));
+        assert.equal(r.score, 100);
+        assert.equal(r.needsReview, false);
+        const f = r.factors.find(f => f.factor === 'ai-dogrulama');
+        assert.ok(f);
+        assert.equal(f.deduction, 0);
+    });
+
+    test('temiz doğrulama → faktör yok', () => {
+        const r = ConfidenceScore.compute(cleanSignals({
+            verification: { checked: 10, mismatches: [] }
+        }));
+        assert.equal(r.score, 100);
+        assert.equal(r.needsReview, false);
     });
 });
 

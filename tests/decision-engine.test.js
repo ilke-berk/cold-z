@@ -221,6 +221,77 @@ describe('DecisionEngine — gap / kayıt sıklığı', () => {
     });
 });
 
+describe('DecisionEngine — TOR bütçesi (artık etkin)', () => {
+    test('TOR aşımı → conditional + gerekçe', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            tor: { torMinutes: 150, torLimit: 120, status: 'exceeded', usedPercentage: 125, unknownGapMinutes: 0 }
+        }));
+        assert.equal(r.decision, 'conditional');
+        assert.ok(r.reasons.some(x => /TOR/.test(x) && /aşıldı/.test(x)));
+        assert.match(r.summary, /Eczacı/);
+    });
+
+    test('TOR aşımı reject\'i düşürmez, revize\'yi de düşürmez', () => {
+        const rej = DecisionEngine.evaluate(baseAnalysis({
+            compliance: { status: 'fail', redReasons: ['x'], conditionalReasons: [], checks: [] },
+            tor: { torMinutes: 150, torLimit: 120, status: 'exceeded' }
+        }));
+        assert.equal(rej.decision, 'reject');
+        const rev = DecisionEngine.evaluate(baseAnalysis({
+            validation: { gaps: [], hasCriticalGap: false, isFrequencyIssue: true, mostCommonGapMin: 90, avgGapMin: 90 },
+            tor: { torMinutes: 150, torLimit: 120, status: 'exceeded' }
+        }));
+        assert.equal(rev.decision, 'revize');
+    });
+
+    test('TOR warning bandı → accept kalır, bilgi notu', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            tor: { torMinutes: 100, torLimit: 120, status: 'warning', usedPercentage: 83.3 }
+        }));
+        assert.equal(r.decision, 'accept');
+        assert.ok(r.reasons.some(x => /bütçesinin/.test(x)));
+    });
+
+    test('bilinmeyen boşluk süresi bilgi olarak yazılır', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            tor: { torMinutes: 0, torLimit: 120, status: 'safe', unknownGapMinutes: 360 }
+        }));
+        assert.ok(r.reasons.some(x => /veri boşluğu boyunca sıcaklık bilinmiyor/.test(x)));
+    });
+});
+
+describe('DecisionEngine — yetersiz veri, donma, anlık sapma, özel aralık', () => {
+    test('yetersiz veriyle değerlendirilemeyen sapma → conditional (temiz kabul DEĞİL)', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            compliance: { status: 'pass', redReasons: [], conditionalReasons: [], checks: [{ insufficientData: true, isMktOk: null }], insufficientReasons: ['8-15°C sapması için geriye dönük 24 saatlik veri yok'] }
+        }));
+        assert.equal(r.decision, 'conditional');
+        assert.ok(r.reasons.some(x => /yetersiz/.test(x)));
+    });
+
+    test('geriye dönük kontrolde donma → reject', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            retrospectiveMKT: { freezeCount: 1, windows: [{ status: 'freeze', peakTemp: -1.5, mkt24h: 5.1 }] },
+            config: { lowerLimit: 2, upperLimit: 8, freezeLimit: 0 }
+        }));
+        assert.equal(r.decision, 'reject');
+        assert.ok(r.reasons.some(x => /Donma/.test(x) && /telafi sayılmaz/.test(x)));
+    });
+
+    test('anlık sapmalar bilgi notu olarak eklenir, karar accept', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({
+            compliance: { status: 'pass', redReasons: [], conditionalReasons: [], checks: [], transientCount: 2 }
+        }));
+        assert.equal(r.decision, 'accept');
+        assert.ok(r.reasons.some(x => /2 anlık sapma/.test(x)));
+    });
+
+    test('pozitif gerekçe seçilen aralığı yazar (2-8 sabit değil)', () => {
+        const r = DecisionEngine.evaluate(baseAnalysis({ config: { lowerLimit: -25, upperLimit: -15 } }));
+        assert.ok(r.reasons.some(x => /\(-25--15°C\)/.test(x)), r.reasons.join(' | '));
+    });
+});
+
 describe('DecisionEngine — confidence taban', () => {
     test('confidence en az 40 olmalı', () => {
         // Tüm cezalar toplansın: reject + anti-fraud + mukerrer

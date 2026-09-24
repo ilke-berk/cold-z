@@ -131,7 +131,7 @@
     if (['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(ext)) return 'image';
     return 'excel';
   }
-  function fmtSize(bytes) { return (window.Utils && Utils.formatFileSize) ? Utils.formatFileSize(bytes) : (bytes / 1024).toFixed(0) + ' KB'; }
+  function fmtSize(bytes) { return (typeof Utils !== 'undefined' && Utils.formatFileSize) ? Utils.formatFileSize(bytes) : (bytes / 1024).toFixed(0) + ' KB'; }
 
   // Kademe 2: düşük güvenli satırın kaynak sayfasını görüntüye çevir.
   // pdfjs zaten yüklü — ek bağımlılık yok. Görseller için doğrudan objectURL.
@@ -155,8 +155,10 @@
     const fileRef = useRef(null);
     const [files, setFiles] = useState([]);     // {id, file, name, kind, size, ai, prog, status, done, error}
     const [drag, setDrag] = useState(false);
-    const [range, setRange] = useState('cold');
-    const [limits, setLimits] = useState({ lo: 2, hi: 8, tor: 120 });
+    // Varsayılanlar Ayarlar ekranından (CCSettings, localStorage); sayfada değiştirilebilir
+    const initialSettings = (window.CCSettings && CCSettings.get()) || { range: 'cold', lo: 2, hi: 8, tor: 120 };
+    const [range, setRange] = useState(initialSettings.range);
+    const [limits, setLimits] = useState({ lo: initialSettings.lo, hi: initialSettings.hi, tor: initialSettings.tor });
     const [form, setForm] = useState({ pharmacy: '', batch: '', drug: '', serial: '', purchaseDate: '', returnDate: '', reason: REASONS[0], barcode: '', qty: '', expiry: '', amount: '' });
     const [acOpen, setAcOpen] = useState(false);
     const [pipe, setPipe] = useState([]);
@@ -174,6 +176,29 @@
     const [rowEdits, setRowEdits] = useState({});    // {fileId: {idx: {temp, exclude}}}
     const [pageImgs, setPageImgs] = useState({});    // {fileId: {url, page}}
     const parseCacheRef = useRef({});                // ikinci koşuda AI/parse maliyetini sıfırlar
+    // AI (Gemini) erişilebilirliği: yalnızca taranmış PDF/görüntü OCR'ı ve yeni PDF
+    // formatlarının şema keşfi AI ister. Excel/CSV ve öğrenilmiş şablonlar AI'sız
+    // çalışır — AI yoksa uygulama kapanmaz, yalnızca o yol kapalı diye söylenir.
+    const [ai, setAi] = useState(undefined);         // undefined=sorgulanıyor | {serverReady, geminiReady}
+    useEffect(() => {
+      let alive = true;
+      fetch('/api/health').then(r => r.json())
+        .then(j => { if (alive) setAi({ serverReady: true, geminiReady: !!j.geminiReady }); })
+        .catch(() => { if (alive) setAi({ serverReady: false, geminiReady: false }); });
+      return () => { alive = false; };
+    }, []);
+
+    // BexFlow İadeleri ekranından gelen ısı kayıtları: dosyalar eklenir, iade formu
+    // BexFlow verisiyle ön doldurulur; kayıt sonrası analiz BexFlow ekine bağlanır.
+    const bexRef = useRef(null);
+    useEffect(() => {
+      const h = window.CCBexHandoff;
+      if (!h) return;
+      window.CCBexHandoff = null;
+      bexRef.current = { taskId: h.taskId, attachmentIds: h.attachmentIds || [], sources: h.sources || [] };
+      setForm(s => ({ ...s, ...Object.fromEntries(Object.entries(h.form || {}).filter(([, v]) => v)) }));
+      addFiles(h.files || []);
+    }, []);
 
     // İnceleme açıldığında düşük güvenli satırların kaynak sayfasını render et
     // (dosya başına bir görüntü: ilk düşük güvenli satırın sayfası).
@@ -470,7 +495,8 @@
       setFiles(f => f.map(x => ({ ...x, prog: 0, status: x.ai ? 'Smart bekliyor' : 'Hazır', done: false, error: false })));
 
       const effectiveApprovals = approvalsOverride || approvals;
-      const cfg = { lowerLimit: limits.lo, upperLimit: limits.hi, torLimit: limits.tor };
+      const eng = (window.CCSettings && CCSettings.engineConfig()) || {};
+      const cfg = { lowerLimit: limits.lo, upperLimit: limits.hi, torLimit: limits.tor, maxIntervalMinutes: eng.maxIntervalMinutes, activationEnergy: eng.activationEnergy };
       try {
         const out = await CCPipeline.run(
           files.map(f => {
@@ -497,11 +523,20 @@
           {
             approvedIds: Object.keys(effectiveApprovals).filter(id => effectiveApprovals[id]),
             parseCache: parseCacheRef.current,
-            // "formatı hatırla" kapatılan dosyalar şablon hafızasına yazılmaz
-            templateOptOut: Object.keys(remember).reduce((acc, id) => {
-              if (remember[id] === false) acc[id] = true;
-              return acc;
-            }, {}),
+            // "formatı hatırla" kapatılan dosyalar şablon hafızasına yazılmaz.
+            // Faz 7: doğrulama/kanıt faktörüyle incelemeye düşen belgelerde
+            // varsayılan da "hatırlama" — kullanıcı kutuyu açıkça işaretlemedikçe.
+            templateOptOut: (() => {
+              const out = {};
+              Object.keys(remember).forEach(id => { if (remember[id] === false) out[id] = true; });
+              (review || []).forEach(rev => {
+                if (remember[rev.id] === undefined &&
+                    (rev.factors || []).some(fa => fa.factor === 'ai-dogrulama' || fa.factor === 'kanit-kontrolu')) {
+                  out[rev.id] = true;
+                }
+              });
+              return out;
+            })(),
           }
         );
         if (out.needsReview) {
@@ -513,7 +548,12 @@
           return;
         }
         setReview(null);
-        CCStore.set({ scenario: out.scenario, record: serializeRecord(out.record), savedId: null });
+        // Kaynak belgeler: raporda "Belgede göster" için. File nesneleri oturum boyunca bellekte;
+        // BexFlow ekleri kimlikleriyle sunucudan her zaman yeniden açılabilir.
+        const bxSrc = (bexRef.current && bexRef.current.sources) || [];
+        if (window.CCSources) CCSources.register(files.map(f => ({ name: f.name, file: f.file })));
+        const sources = files.map(f => ({ name: f.name, bexflowAttachmentId: (bxSrc.find(s => s.name === f.name) || {}).id || null }));
+        CCStore.set({ scenario: out.scenario, record: serializeRecord(out.record), savedId: null, bexflow: bexRef.current, sources });
         setResult({ rowCount: out.rowCount, mkt: out.mkt, tor: out.tor, decision: out.decision.decision, label: (window.CCPipeline, out.scenario.label) });
         setRunning(false);
       } catch (err) {
@@ -563,12 +603,58 @@
     const acList = form.drug ? FORMULARY.filter(d => d.toUpperCase().includes(form.drug.toUpperCase())).slice(0, 8) : [];
     const PIPE_TOTAL = 6;
 
+    // KVKK bildirimi (Faz 13): kullanıcı başına bir kez; onaylanmadan analiz başlatılamaz.
+    const [kvkkAck, setKvkkAck] = useState(() => !!(((window.CCAuth || {}).user || {}).kvkkAckAt));
+    const [kvkkBusy, setKvkkBusy] = useState(false);
+    const ackKvkk = async () => {
+      setKvkkBusy(true);
+      try {
+        const r = await fetch('/api/auth/kvkk-ack', { method: 'POST' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.success) throw new Error(j.error || 'Onay kaydedilemedi.');
+        if (window.CCAuth) window.CCAuth.user = j.user;
+        setKvkkAck(true);
+      } catch (e) { setError(e.message); }
+      setKvkkBusy(false);
+    };
+
     return (
       <CRShell theme={theme} active="upload" onNav={onNav}>
         <div className="cr-hr">
           <div><div className="cr-h1">Veri Yükleme</div><div className="cr-h1sub">Adım {step} / 3 · {STEPS[step - 1].lbl}</div></div>
           <button className="cr-btn cr-btn2" onClick={() => onNav('dashboard')}><Ic.chevL size={15} /> KONTROL PANELİ</button>
         </div>
+        {!kvkkAck && (
+          <div className="cr-pn" data-testid="kvkk-notice" style={{ padding: '14px 16px', marginBottom: 14, borderColor: 'var(--sig)', fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <Ic.lock size={16} style={{ color: 'var(--sig)', flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1 }}>
+                <b style={{ color: 'var(--tx)' }}>KVKK bildirimi — analiz başlatmadan önce bir kez onaylanır.</b>
+                <ul style={{ margin: '8px 0 0 16px', padding: 0 }}>
+                  <li><b>Yerel saklama:</b> Analiz özeti, ham sıcaklık serisi, cihaz seri numarası, eczane/ilaç bilgileri ve denetim izi bu bilgisayardaki veritabanında tutulur; başka bir sunucuya gönderilmez.</li>
+                  <li><b>Yapay zeka:</b> Yalnızca taranmış PDF / fotoğraf ve tanınmayan yeni PDF formatlarında, belgenin <u>görüntüsü</u> OCR için Google Gemini API'ye iletilir. Görüntüde eczane adı, cihaz serisi gibi bilgiler bulunabilir; Excel/CSV ve öğrenilmiş şablonlar için hiçbir veri dışarı çıkmaz.</li>
+                  <li><b>Saklama ve silme:</b> Yönetici saklama süresi tanımlayabilir (Ayarlar); süreyi aşan kayıtlar otomatik silinir. Her kayıt Kontrol Paneli'nden tek tek silinebilir. Denetim izi (kim, ne zaman, ne yaptı) yasal izlenebilirlik için silinmez.</li>
+                </ul>
+                <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <button className="cr-btn" disabled={kvkkBusy} onClick={ackKvkk}><Ic.check size={14} /> {kvkkBusy ? 'Kaydediliyor…' : 'Okudum, onaylıyorum'}</button>
+                  <span style={{ fontSize: 11, color: 'var(--t3)' }}>Onay, kullanıcı hesabınıza zaman damgasıyla ve denetim izine yazılır.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {ai && !ai.geminiReady && (
+          <div className="cr-pn" data-testid="ai-offline" style={{ padding: '12px 16px', marginBottom: 14, borderColor: 'var(--amber)', fontSize: 12.5, display: 'flex', gap: 10, alignItems: 'flex-start', color: 'var(--t2)' }}>
+            <Ic.alert size={16} style={{ color: 'var(--amber)', flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <b style={{ color: 'var(--tx)' }}>{ai.serverReady ? 'Yapay zeka (OCR) şu an kullanılamıyor.' : 'Sunucuya ulaşılamıyor.'}</b>{' '}
+              {ai.serverReady
+                ? 'API anahtarı tanımlı değil veya Gemini erişilemiyor. Excel/CSV dosyaları ve daha önce öğrenilmiş PDF şablonları AI olmadan çözülmeye devam eder; taranmış PDF / fotoğraf ve yeni PDF formatları bekletilir.'
+                : 'Analiz, kayıt ve denetim izi için yerel sunucu (npm start / masaüstü uygulaması) gereklidir.'}
+              {ai.serverReady && <> <a href="#" onClick={e => { e.preventDefault(); onNav('settings'); }} style={{ color: 'var(--sig)', fontWeight: 600 }}>Ayarlar'da API anahtarı gir →</a></>}
+            </div>
+          </div>
+        )}
 
         <style>{UP_CSS}</style>
 
@@ -889,9 +975,11 @@
                   <div>
                     <div className="up-revTitle">İNSAN ONAYI GEREKLİ — ANALİZ BEKLETİLİYOR</div>
                     <div className="up-revSub">
-                      Aşağıdaki belgelerde çıkarım güveni eşiğin altında veya tarih formatı belirsiz.
+                      Aşağıdaki belgelerde çıkarım güveni eşiğin altında, tarih formatı belirsiz veya doğrulama
+                      denetimleri (kanıt kontrolü / AI hakem) uyuşmazlık buldu.
                       Örneklem belgenin <b>başından, ortasından ve sonundan</b> alınmıştır — tarih sırası, gün/ay düzeni ve
-                      sıcaklık değerlerinin makul olduğunu kontrol edin. Gerekirse 1. adımdan sütun eşleştirmeyi düzeltin.
+                      sıcaklık değerlerinin makul olduğunu kontrol edin. AI'nın ham satırdan okuduğu öneriler varsa
+                      ızgarada "AI Önerisi" sütununda tek tıkla uygulanabilir. Gerekirse 1. adımdan sütun eşleştirmeyi düzeltin.
                       Her onay denetim kaydına (audit log) yazılır.
                     </div>
                   </div>
@@ -922,9 +1010,14 @@
                         const fl = files.find(x => x.id === rev.id);
                         const canRemember = fl && fl.fingerprint && (!fl.templateMatch || (fl.templateMatch.match !== 'exact' && fl.templateMatch.match !== 'structural'));
                         if (!canRemember || ok) return null;
+                        // Faz 7: belge doğrulama/kanıt faktörüyle incelemeye düştüyse
+                        // şüpheli şemayı hatırlamak varsayılan DEĞİLDİR — kullanıcı
+                        // düzelttikten sonra bilerek işaretleyebilir.
+                        const verFlagged = (rev.factors || []).some(fa => fa.factor === 'ai-dogrulama' || fa.factor === 'kanit-kontrolu');
+                        const checked = remember[rev.id] !== undefined ? !!remember[rev.id] : !verFlagged;
                         return (
                           <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 9, fontSize: 11.5, color: 'var(--t2)', cursor: 'pointer' }}>
-                            <input type="checkbox" checked={remember[rev.id] !== false}
+                            <input type="checkbox" checked={checked}
                               onChange={e => setRemember(s => ({ ...s, [rev.id]: e.target.checked }))} />
                             Bu cihaz formatını hatırla — aynı düzendeki sonraki belgeler AI'sız, anında çözülür
                           </label>
@@ -932,24 +1025,39 @@
                       })()}
                       {/* Satır inceleme ızgarası (Faz 5 / Kademe 2): yalnızca işaretli
                           satırlar doğrulanır, belgenin tamamı değil. */}
-                      {!ok && rev.lowConfRows && rev.lowConfRows.length > 0 && (
+                      {!ok && rev.lowConfRows && rev.lowConfRows.length > 0 && (() => {
+                        const hasSuggest = rev.lowConfRows.some(r => r.suggested);
+                        return (
                         <div className={'up-lcWrap' + (pageImgs[rev.id] ? '' : ' noimg')}>
                           <div>
-                            <div className="up-lcTitle"><Ic.alert size={12} sw={2.4} /> DÜŞÜK GÜVENLİ SATIRLAR ({rev.lowConfRows.length}) — DEĞERİ KAYNAKLA KARŞILAŞTIRIP GEREKİRSE DÜZELTİN</div>
+                            <div className="up-lcTitle"><Ic.alert size={12} sw={2.4} /> İŞARETLİ SATIRLAR ({rev.lowConfRows.length}) — DEĞERİ KAYNAKLA KARŞILAŞTIRIP GEREKİRSE DÜZELTİN</div>
                             <div style={{ overflowX: 'auto', maxHeight: 320, overflowY: 'auto' }}>
                               <table className="up-lcTbl">
                                 <thead>
-                                  <tr><th>#</th><th>Tarih & Saat</th><th>Okunan</th><th>Güven</th><th>Düzeltme (°C)</th><th>Ham Satır</th><th title="Satırı analizden çıkar">Çıkar</th></tr>
+                                  <tr><th>#</th><th>Tarih & Saat</th><th>Okunan</th><th>Güven</th>{hasSuggest && <th title="AI doğrulamasının ham satırdan okuduğu değer">AI Önerisi</th>}<th>Düzeltme (°C)</th><th>Ham Satır</th><th title="Satırı analizden çıkar">Çıkar</th></tr>
                                 </thead>
                                 <tbody>
                                   {rev.lowConfRows.map(lr => {
                                     const e = (rowEdits[rev.id] || {})[lr.idx] || {};
+                                    const sugTemp = lr.suggested && typeof lr.suggested.temperature === 'number' ? lr.suggested.temperature : null;
                                     return (
-                                      <tr key={lr.idx} className={e.exclude ? 'exc' : ''}>
+                                      <tr key={lr.idx} className={e.exclude ? 'exc' : ''} title={lr.note || ''}>
                                         <td style={{ color: 'var(--t3)' }}>{lr.idx + 1}</td>
                                         <td style={{ whiteSpace: 'nowrap' }}>{lr.date}</td>
                                         <td>{lr.temp}°C</td>
-                                        <td><span className="up-lcConf">{Math.round(lr.conf * 100)}%</span></td>
+                                        <td>{typeof lr.conf === 'number' ? <span className="up-lcConf">{Math.round(lr.conf * 100)}%</span> : <span style={{ color: 'var(--t3)' }}>—</span>}</td>
+                                        {hasSuggest && (
+                                          <td style={{ whiteSpace: 'nowrap' }}>
+                                            {sugTemp !== null ? (
+                                              <button className="cr-btn" style={{ padding: '2px 8px', fontSize: 11 }}
+                                                title={(lr.note ? lr.note + ' — ' : '') + 'öneriyi düzeltme alanına yaz'}
+                                                disabled={!!e.exclude}
+                                                onClick={() => setRowEdits(s => ({ ...s, [rev.id]: { ...(s[rev.id] || {}), [lr.idx]: { ...e, temp: String(sugTemp) } } }))}>
+                                                {sugTemp}°C uygula
+                                              </button>
+                                            ) : <span style={{ color: 'var(--t3)' }}>—</span>}
+                                          </td>
+                                        )}
                                         <td>
                                           <input className={'up-lcInput' + (e.temp !== undefined && String(e.temp).trim() !== '' ? ' edited' : '')}
                                             placeholder={String(lr.temp)} value={e.temp !== undefined ? e.temp : ''}
@@ -982,7 +1090,8 @@
                             </div>
                           )}
                         </div>
-                      )}
+                        );
+                      })()}
                       {rev.sample && rev.sample.length > 0 && (
                         <div style={{ marginTop: 10, overflowX: 'auto' }}>
                           <div className="up-mapLabel" style={{ marginBottom: 4 }}>Baş / Orta / Son Örneklemi ({rev.sample.length} kayıt)</div>
@@ -1033,9 +1142,9 @@
             // Zorunlu onay kapısı: bekleyen inceleme varken analiz başlatılamaz.
             const pendingReview = review ? review.filter(r => !approvals[r.id]).length : 0;
             return (
-              <button className="cr-btn" onClick={() => runAnalysis()} disabled={running || !files.length || pendingReview > 0} style={{ opacity: running || pendingReview > 0 ? .7 : 1 }}>
-                {running ? <span className="up-spin" /> : pendingReview > 0 ? <Ic.alert size={15} sw={2.2} /> : <Ic.activity size={15} sw={2.2} />}
-                {running ? 'ANALİZ EDİLİYOR…' : pendingReview > 0 ? `ONAY BEKLENİYOR (${pendingReview})` : 'ANALİZİ BAŞLAT'}
+              <button className="cr-btn" onClick={() => runAnalysis()} disabled={running || !files.length || pendingReview > 0 || !kvkkAck} title={!kvkkAck ? 'Önce KVKK bildirimini onaylayın (sayfanın üstünde)' : ''} style={{ opacity: running || pendingReview > 0 || !kvkkAck ? .7 : 1 }}>
+                {running ? <span className="up-spin" /> : pendingReview > 0 || !kvkkAck ? <Ic.alert size={15} sw={2.2} /> : <Ic.activity size={15} sw={2.2} />}
+                {running ? 'ANALİZ EDİLİYOR…' : !kvkkAck ? 'KVKK ONAYI GEREKLİ' : pendingReview > 0 ? `ONAY BEKLENİYOR (${pendingReview})` : 'ANALİZİ BAŞLAT'}
               </button>
             );
           })()}

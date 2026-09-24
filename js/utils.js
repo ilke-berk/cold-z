@@ -2,6 +2,9 @@
  * ColdChain AI — Utility Functions
  */
 
+// Not: Arayüz (app.html) her zaman sunucudan http://localhost:PORT üzerinden
+// yüklenir (Electron dahil); /api/* çağrıları göreli yoldur, ayrı taban adresi yok.
+
 const Utils = {
     /**
      * Generate unique ID
@@ -313,6 +316,10 @@ const Utils = {
             // Saat parçala
             const timeParts = timeStr ? timeStr.trim().split(/[:\.,\s]/).filter(p => p.length > 0).map(Number) : [0, 0, 0];
 
+            // Aralık dışı saat (örn. nem %60.72'nin "60:72" diye saat sanılması)
+            // Date taşmasıyla tarihi günlerce kaydırır — kabul etme.
+            if ((timeParts[0] || 0) > 23 || (timeParts[1] || 0) > 59 || (timeParts[2] || 0) > 59) return null;
+
             let year, month, day;
 
             if (dateParts[0].length === 4) {
@@ -433,3 +440,6 @@ const Utils = {
         return parseFloat(k) - 273.15;
     }
 };
+
+// Tarayıcıda global olarak eriş (üst düzey const, window özelliği oluşturmaz)
+if (typeof window !== 'undefined') window.Utils = Utils;

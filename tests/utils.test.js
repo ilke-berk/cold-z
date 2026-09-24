@@ -101,6 +101,19 @@ describe('Utils.parseTimestamp', () => {
         assert.equal(d.getHours(), 0);
         assert.equal(d.getMinutes(), 0);
     });
+    test('aralık dışı saat (60:72) → null, Date taşmasıyla tarih kaydırılmaz', () => {
+        // Nem değeri %60.72'nin saat sanıldığı durumda taşma 2,5 gün ileri atardı
+        assert.equal(Utils.parseTimestamp('02/07/2026', '60:72'), null);
+        assert.equal(Utils.parseTimestamp('02/07/2026', '10:99'), null);
+        assert.equal(Utils.parseTimestamp('02/07/2026', '10:30:88'), null);
+    });
+    test('saniyeli saat doğru parse edilir', () => {
+        const d = Utils.parseTimestamp('02/07/2026', '00:04:09');
+        assert.ok(d);
+        assert.equal(d.getHours(), 0);
+        assert.equal(d.getMinutes(), 4);
+        assert.equal(d.getSeconds(), 9);
+    });
 });
 
 describe('Utils.resolveDateFormat (dedektörsüz — eski varyans yedeği)', () => {

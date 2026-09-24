@@ -120,6 +120,8 @@ function initDB() {
 
         // Audit trail: zaman damgali, hash chain ile baglanmis log kayitlari.
         // prev_hash sayesinde bir kaydi degistirmek tum sonraki hash'leri bozar.
+        // Faz 12: hash artik HMAC-SHA256 (anahtar userData/audit.key, DB'den ayri);
+        // zincir basi (son id+hash) audit.head.json'da tutulur -> sondan silme de yakalanir.
         db.run(`
             CREATE TABLE IF NOT EXISTS audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,6 +138,154 @@ function initDB() {
             if (err) console.error('[HATA] audit_log tablo olusturma hatasi:', err.message);
             else console.log('[OK] audit_log tablosu hazir.');
         });
+
+        // Kullanicilar (Faz 12): sunucu tarafi kimlik dogrulama. Sifre scrypt
+        // ozeti olarak saklanir; roller: admin | qa.
+        db.run(`
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                name TEXT,
+                role TEXT NOT NULL DEFAULT 'qa',
+                pass_salt TEXT NOT NULL,
+                pass_hash TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                must_change INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_login_at DATETIME
+            )
+        `, (err) => {
+            if (err) console.error('[HATA] users tablo olusturma hatasi:', err.message);
+            else {
+                console.log('[OK] users tablosu hazir.');
+                // Migrasyon (Faz 13): KVKK bildirimi onay zamani. Kolon varsa hata yutulur.
+                db.run(`ALTER TABLE users ADD COLUMN kvkk_ack_at DATETIME`, (aErr) => {
+                    if (!aErr) console.log('[OK] users.kvkk_ack_at kolonu eklendi (migrasyon).');
+                });
+            }
+        });
+
+        // BexFlow entegrasyonu: işler, kalemler, notlar, ekler (bexflow-store.js)
+        require('./bexflow-store').initSchema(db);
+        // Analiz kaynak belgeleri (elle yüklenen orijinal dosyalar)
+        require('./analysis-sources').initSchema(db);
+    });
+}
+
+// ─── KVKK: silme ve saklama suresi (Faz 13) ─────────────────
+function setKvkkAck(userId) {
+    return new Promise((resolve, reject) => {
+        db.run(`UPDATE users SET kvkk_ack_at = CURRENT_TIMESTAMP WHERE id = ?`, [userId], (err) => err ? reject(err) : resolve());
+    });
+}
+function getAnalysisById(id) {
+    return new Promise((resolve, reject) => {
+        db.get(`SELECT id, pharmacy_name, drug_name, batch_number, device_serial, decision, created_at FROM analyses WHERE id = ?`, [id], (err, row) => err ? reject(err) : resolve(row || null));
+    });
+}
+/** Bir analizi ve ona bagli ham seriyi + cihaz seri kaydini siler (denetim izi KALIR). */
+function deleteAnalysis(id) {
+    return new Promise((resolve, reject) => {
+        getAnalysisById(id).then(row => {
+            if (!row) return resolve(null);
+            db.serialize(() => {
+                db.run(`DELETE FROM analysis_readings WHERE analysis_id = ?`, [id]);
+                db.run(`DELETE FROM device_serials WHERE analysis_id = ?`, [id]);
+                db.run(`DELETE FROM analyses WHERE id = ?`, [id], (err) => err ? reject(err) : resolve(row));
+            });
+        }).catch(reject);
+    });
+}
+/** Saklama suresi kesim tarihi (ISO). days <= 0 → null (sinirsiz). Saf, testlenir. */
+function retentionCutoffISO(days, now = Date.now()) {
+    const d = Number(days);
+    if (!isFinite(d) || d <= 0) return null;
+    return new Date(now - d * 86400000).toISOString();
+}
+/**
+ * Saklama suresini asan analizleri, ham serileri ve cihaz seri kayitlarini siler.
+ * created_at SQLite'ta 'YYYY-MM-DD HH:MM:SS' (UTC) veya ISO; ikisi de ISO kesimle
+ * metinsel karsilastirilabilir (ilk 19 karakter ayni bicim).
+ */
+function purgeOlderThan(days) {
+    return new Promise((resolve, reject) => {
+        const cutoff = retentionCutoffISO(days);
+        if (!cutoff) return resolve({ cutoff: null, analyses: 0, readings: 0, deviceSerials: 0 });
+        const cut = cutoff.replace('T', ' ').slice(0, 19);
+        const out = { cutoff, analyses: 0, readings: 0, deviceSerials: 0 };
+        db.serialize(() => {
+            db.run(`DELETE FROM analysis_readings WHERE analysis_id IN (SELECT id FROM analyses WHERE substr(replace(created_at,'T',' '),1,19) < ?)`, [cut], function (e1) {
+                if (e1) return reject(e1);
+                out.readings = this.changes;
+                db.run(`DELETE FROM device_serials WHERE substr(replace(created_at,'T',' '),1,19) < ?`, [cut], function (e2) {
+                    if (e2) return reject(e2);
+                    out.deviceSerials = this.changes;
+                    db.run(`DELETE FROM analyses WHERE substr(replace(created_at,'T',' '),1,19) < ?`, [cut], function (e3) {
+                        if (e3) return reject(e3);
+                        out.analyses = this.changes;
+                        resolve(out);
+                    });
+                });
+            });
+        });
+    });
+}
+
+// ─── KULLANICILAR (Faz 12) ──────────────────────────────────
+function countUsers(filter = {}) {
+    return new Promise((resolve, reject) => {
+        const where = [];
+        const params = [];
+        if (filter.role) { where.push('role = ?'); params.push(filter.role); }
+        if (filter.active !== undefined) { where.push('active = ?'); params.push(filter.active ? 1 : 0); }
+        const sql = `SELECT COUNT(*) AS n FROM users${where.length ? ' WHERE ' + where.join(' AND ') : ''}`;
+        db.get(sql, params, (err, row) => err ? reject(err) : resolve(row ? row.n : 0));
+    });
+}
+function getUserByEmail(email) {
+    return new Promise((resolve, reject) => {
+        db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, row) => err ? reject(err) : resolve(row || null));
+    });
+}
+function getUserById(id) {
+    return new Promise((resolve, reject) => {
+        db.get(`SELECT * FROM users WHERE id = ?`, [id], (err, row) => err ? reject(err) : resolve(row || null));
+    });
+}
+function listUsers() {
+    return new Promise((resolve, reject) => {
+        db.all(`SELECT id, email, name, role, active, must_change, created_at, last_login_at FROM users ORDER BY id ASC`, [], (err, rows) => err ? reject(err) : resolve(rows));
+    });
+}
+function createUser({ email, name, role, salt, hash, mustChange }) {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `INSERT INTO users (email, name, role, pass_salt, pass_hash, active, must_change) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+            [email, name || '', role || 'qa', salt, hash, mustChange ? 1 : 0],
+            function (err) {
+                if (err) return reject(err);
+                getUserById(this.lastID).then(resolve, reject);
+            }
+        );
+    });
+}
+function updateUser(id, patch) {
+    return new Promise((resolve, reject) => {
+        const sets = [];
+        const params = [];
+        if (patch.name !== undefined) { sets.push('name = ?'); params.push(patch.name); }
+        if (patch.role !== undefined) { sets.push('role = ?'); params.push(patch.role); }
+        if (patch.active !== undefined) { sets.push('active = ?'); params.push(patch.active ? 1 : 0); }
+        if (patch.salt !== undefined && patch.hash !== undefined) { sets.push('pass_salt = ?', 'pass_hash = ?'); params.push(patch.salt, patch.hash); }
+        if (patch.mustChange !== undefined) { sets.push('must_change = ?'); params.push(patch.mustChange ? 1 : 0); }
+        if (!sets.length) return resolve();
+        params.push(id);
+        db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params, (err) => err ? reject(err) : resolve());
+    });
+}
+function touchLogin(id) {
+    return new Promise((resolve, reject) => {
+        db.run(`UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?`, [id], (err) => err ? reject(err) : resolve());
     });
 }
 
@@ -172,6 +322,55 @@ function saveAnalysis(data) {
             }
         });
     });
+}
+
+// ─── YEDEKLEME (Faz 14) ─────────────────────────────────────
+const backupsRoot = path.join(userDataPath, 'backups');
+/**
+ * Tutarlı anlık görüntü: SQLite VACUUM INTO (yazma sırasında bile bütün kopya),
+ * yanına audit.key + audit.head.json. .env kopyalanmaz. Eski yedekler budanır.
+ */
+function backupTo(keep = 7) {
+    return new Promise((resolve, reject) => {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const dir = path.join(backupsRoot, stamp);
+        fs.mkdirSync(dir, { recursive: true });
+        const dest = path.join(dir, 'coldchain.db');
+        // VACUUM INTO tek tırnaklı yol ister; ters bölü Windows'ta sorun değil, tırnak kaçırılır
+        db.run(`VACUUM INTO '${dest.replace(/'/g, "''")}'`, (err) => {
+            if (err) return reject(err);
+            const files = ['coldchain.db'];
+            for (const extra of ['audit.key', 'audit.head.json']) {
+                const src = path.join(userDataPath, extra);
+                if (fs.existsSync(src)) { fs.copyFileSync(src, path.join(dir, extra)); files.push(extra); }
+            }
+            fs.writeFileSync(path.join(dir, 'MANIFEST.json'), JSON.stringify({ createdAt: new Date().toISOString(), files, dbPath, note: 'Geri yüklemek için uygulamayı kapatın, coldchain.db + audit.key + audit.head.json dosyalarını userData klasörüne kopyalayın.' }, null, 2) + '\n');
+            let bytes = 0;
+            for (const f of files) { try { bytes += fs.statSync(path.join(dir, f)).size; } catch (e) {} }
+            // Budama: en yeni `keep` yedek kalsın
+            let pruned = 0;
+            try {
+                const all = fs.readdirSync(backupsRoot).filter(n => /^\d{4}-\d{2}-\d{2}T/.test(n)).sort();
+                for (const old of all.slice(0, Math.max(0, all.length - keep))) {
+                    fs.rmSync(path.join(backupsRoot, old), { recursive: true, force: true });
+                    pruned++;
+                }
+            } catch (e) { /* budama hatası yedeği geçersiz kılmaz */ }
+            resolve({ dir, files, bytes, pruned });
+        });
+    });
+}
+function listBackups() {
+    let items = [];
+    try {
+        items = fs.readdirSync(backupsRoot).filter(n => /^\d{4}-\d{2}-\d{2}T/.test(n)).sort().reverse().map(n => {
+            const dir = path.join(backupsRoot, n);
+            let bytes = 0;
+            try { for (const f of fs.readdirSync(dir)) bytes += fs.statSync(path.join(dir, f)).size; } catch (e) {}
+            return { name: n, dir, bytes };
+        });
+    } catch (e) { /* klasör yok */ }
+    return { root: backupsRoot, items };
 }
 
 function getRecentAnalyses(limit = 10) {
@@ -215,41 +414,71 @@ function sha256(str) {
     return crypto.createHash('sha256').update(str, 'utf8').digest('hex');
 }
 
-function getLastAuditHash() {
+// Imza anahtari: DB'den AYRI bir dosyada (userData/audit.key, 0600). Ilk
+// calismada rastgele 32 bayt uretilir. Anahtar olmadan DB'deki satirlar
+// yeniden hesaplanip zincir "tamir" edilemez (eski duz SHA-256'da edilebiliyordu).
+const auditKeyPath = path.join(userDataPath, 'audit.key');
+const auditHeadPath = path.join(userDataPath, 'audit.head.json');
+let auditKey = null;
+function getAuditKey() {
+    if (auditKey) return auditKey;
+    try {
+        auditKey = fs.readFileSync(auditKeyPath, 'utf8').trim();
+        if (!/^[0-9a-f]{64}$/.test(auditKey)) throw new Error('audit.key bozuk');
+    } catch (e) {
+        auditKey = crypto.randomBytes(32).toString('hex');
+        fs.writeFileSync(auditKeyPath, auditKey + '\n', { encoding: 'utf8', mode: 0o600 });
+        console.log('[OK] Denetim imza anahtari olusturuldu:', auditKeyPath);
+    }
+    return auditKey;
+}
+function auditSign(payload) {
+    return crypto.createHmac('sha256', Buffer.from(getAuditKey(), 'hex')).update(payload, 'utf8').digest('hex');
+}
+function auditPayload(r, prevHash) {
+    return [r.type, r.action, r.details || '', r.user || 'Sistem', r.tags || '', r.created_at, prevHash].join('|');
+}
+function readAuditHead() {
+    try { return JSON.parse(fs.readFileSync(auditHeadPath, 'utf8')); } catch (e) { return null; }
+}
+function writeAuditHead(head) {
+    try { fs.writeFileSync(auditHeadPath, JSON.stringify(head) + '\n', { encoding: 'utf8', mode: 0o600 }); } catch (e) { /* salt-okunur dizin: zincir yine DB'de */ }
+}
+
+function getLastAudit() {
     return new Promise((resolve, reject) => {
-        db.get(
-            `SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1`,
-            [],
-            (err, row) => {
-                if (err) reject(err);
-                else resolve(row ? row.hash : 'GENESIS');
-            }
-        );
+        db.get(`SELECT id, hash FROM audit_log ORDER BY id DESC LIMIT 1`, [], (err, row) => {
+            if (err) reject(err);
+            else resolve(row ? { id: row.id, hash: row.hash } : { id: 0, hash: 'GENESIS' });
+        });
     });
 }
 
-async function addAuditEntry(entry) {
-    const prevHash = await getLastAuditHash();
+// Yazmalar sirali kuyruga alinir: "son hash'i oku + ekle" iki ayri ifade oldugundan
+// es zamanli iki kayit ayni prev_hash'i alip zinciri kalici olarak bozuyordu.
+let auditQueue = Promise.resolve();
+function addAuditEntry(entry) {
+    const job = auditQueue.then(() => _addAuditEntry(entry));
+    auditQueue = job.catch(() => {});
+    return job;
+}
+async function _addAuditEntry(entry) {
+    const last = await getLastAudit();
+    const prevHash = last.hash;
     const timestamp = new Date().toISOString();
     const tags = Array.isArray(entry.tags) ? entry.tags.join(',') : (entry.tags || '');
-
-    // Hash chain: yeni kayit, kendi alanlari + onceki hash'i icerir.
-    // Bir kaydi degistirmek, tum sonraki hash'lerin yanlis olmasina yol acar.
-    const payload = [
-        entry.type, entry.action, entry.details || '',
-        entry.user || 'Sistem', tags, timestamp, prevHash
-    ].join('|');
-    const hash = sha256(payload);
+    const row = { type: entry.type, action: entry.action, details: entry.details || '', user: entry.user || 'Sistem', tags, created_at: timestamp };
+    const hash = auditSign(auditPayload(row, prevHash));
 
     return new Promise((resolve, reject) => {
         db.run(
             `INSERT INTO audit_log (type, action, details, user, tags, prev_hash, hash, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [entry.type, entry.action, entry.details || '', entry.user || 'Sistem',
-             tags, prevHash, hash, timestamp],
+            [row.type, row.action, row.details, row.user, tags, prevHash, hash, timestamp],
             function (err) {
-                if (err) reject(err);
-                else resolve({ id: this.lastID, hash, prevHash, timestamp });
+                if (err) return reject(err);
+                writeAuditHead({ lastId: this.lastID, lastHash: hash, updatedAt: timestamp });
+                resolve({ id: this.lastID, hash, prevHash, timestamp });
             }
         );
     });
@@ -279,18 +508,34 @@ function verifyAuditChain() {
 
             let prevHash = 'GENESIS';
             const broken = [];
+            let legacyCount = 0;   // Faz 12 oncesi duz SHA-256 satirlar (imzasiz ama zincirli)
             for (const r of rows) {
-                const payload = [
-                    r.type, r.action, r.details || '',
-                    r.user || 'Sistem', r.tags || '', r.created_at, prevHash
-                ].join('|');
-                const expected = sha256(payload);
-                if (expected !== r.hash || r.prev_hash !== prevHash) {
-                    broken.push({ id: r.id, expected, actual: r.hash });
+                const payload = auditPayload(r, prevHash);
+                const signed = auditSign(payload);
+                const legacy = sha256(payload);
+                const okSigned = signed === r.hash;
+                const okLegacy = !okSigned && legacy === r.hash;
+                if (okLegacy) legacyCount++;
+                if ((!okSigned && !okLegacy) || r.prev_hash !== prevHash) {
+                    broken.push({ id: r.id, expected: signed, actual: r.hash });
                 }
                 prevHash = r.hash;
             }
-            resolve({ ok: broken.length === 0, total: rows.length, broken });
+
+            // Zincir basi: son kayit silinmis mi? (hash zinciri sondan kirpmayi goremez)
+            const head = readAuditHead();
+            const tail = rows.length ? rows[rows.length - 1] : null;
+            const headMismatch = !!head && (!tail || tail.id !== head.lastId || tail.hash !== head.lastHash);
+            resolve({
+                ok: broken.length === 0 && !headMismatch,
+                total: rows.length,
+                broken,
+                legacyCount,
+                signedCount: rows.length - legacyCount - broken.length,
+                headMismatch,
+                head: head ? { lastId: head.lastId, updatedAt: head.updatedAt } : null,
+                signing: 'HMAC-SHA256 (anahtar: ' + path.basename(auditKeyPath) + ')'
+            });
         });
     });
 }
@@ -514,5 +759,19 @@ module.exports = {
     touchTemplate,
     deleteTemplate,
     saveReadings,
-    getReadings
+    getReadings,
+    countUsers,
+    getUserByEmail,
+    getUserById,
+    listUsers,
+    createUser,
+    updateUser,
+    touchLogin,
+    setKvkkAck,
+    getAnalysisById,
+    deleteAnalysis,
+    purgeOlderThan,
+    retentionCutoffISO,
+    backupTo,
+    listBackups
 };

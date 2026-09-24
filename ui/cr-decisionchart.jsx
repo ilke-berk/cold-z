@@ -18,14 +18,20 @@
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
   const MIN_SPAN = 5 * 60 * 1000; // en fazla yakınlaşma: 5 dakikalık pencere
 
-  // Seçili aralık için MKT (Mean Kinetic Temperature) — MKTEngine ile aynı formül.
-  // ΔH = 83.144 kJ/mol (WHO), R = 8.314 J/(mol·K). Bağımsız hesaplanır (global gerekmez).
+  // Seçili aralık için MKT (Mean Kinetic Temperature).
+  // Motor yüklüyse ZAMAN AĞIRLIKLI hesap (MKTEngine.calculateWeighted) kullanılır;
+  // yüklü değilse eşit ağırlıklı yedek formül (ΔH = 83.144 kJ/mol, R = 8.314).
   const MKT_DH = 83144, MKT_R = 8.314;
-  function mktOf(temps) {
-    const k = temps.length;
+  function mktOf(pts) {
+    const k = pts.length;
     if (!k) return null;
+    const eng = window.MKTEngine;
+    if (eng && typeof eng.calculateWeighted === 'function') {
+      const r = eng.calculateWeighted(pts.map(p => ({ timestamp: p.t, temperature: p.v })));
+      if (r && r.mkt != null) return r.mkt;
+    }
     let sum = 0;
-    for (let i = 0; i < k; i++) sum += Math.exp(-MKT_DH / (MKT_R * (temps[i] + 273.15)));
+    for (let i = 0; i < k; i++) sum += Math.exp(-MKT_DH / (MKT_R * (pts[i].v + 273.15)));
     return MKT_DH / (MKT_R * (-Math.log(sum / k))) - 273.15;
   }
 
@@ -315,7 +321,7 @@
         const d = data[i];
         if (d.t < a || d.t > b) continue;
         if (d.v < mn) mn = d.v; if (d.v > mx) mx = d.v;
-        vals.push(d.v); cnt++;
+        vals.push(d); cnt++;
       }
       measInfo = {
         x0: tToXClamped(a), x1: tToXClamped(b), cnt,

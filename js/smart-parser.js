@@ -162,6 +162,14 @@ var SmartParser = (function () {
             if (harvestResult.removedYearOutliers > 0) {
                 log('🧹', `${harvestResult.removedYearOutliers} satır, çoğunluk yılının ±1 dışında kaldığı için elendi (tarih okuma hatası olabilir).`, 'warning');
             }
+            if (harvestResult.decimalCorrection) {
+                const dc = harvestResult.decimalCorrection;
+                schema = harvestResult.appliedSchema;
+                log('🔧', `Ondalık ayracı düzeltildi: şema "${dc.from}" derken belge "${dc.to}" kullanıyor — parse veriye göre yapıldı.`, 'warning');
+                if (templateUse) {
+                    reviewReasons.push(`Eşleşen şablonun ondalık ayracı (${dc.from}) belgedeki veriyle (${dc.to}) çelişti; otomatik düzeltildi — değerleri kontrol edin.`);
+                }
+            }
 
             // ─── ADIM 5: Post-Process ────────────────────────────
             onProgress(90);
@@ -182,6 +190,7 @@ var SmartParser = (function () {
                     skippedRows: harvestResult.tsFailures,
                     removedYearOutliers: harvestResult.removedYearOutliers || 0,
                     dateFormat: harvestResult.dateDetection,
+                    decimalCorrection: harvestResult.decimalCorrection || undefined,
                     // Şablon hafızası (Faz 4): parmak izi analiz sonrası kayıt
                     // için, template bilgi/zorunlu inceleme kapı için taşınır.
                     fingerprint: fingerprint || undefined,
@@ -192,6 +201,11 @@ var SmartParser = (function () {
             };
 
             const processed = DataParser.postProcess(harvestResult.data, [], metadata, { resampling: false });
+            // Tier 1: şema otomatik uygulandıysa (şablon/AI keşfi) AI hakem
+            // denetimi; insan onaylı eşleştirme zaten HITL'den geçti.
+            if (!options.columnMapping) {
+                await this.applyTier1(processed, log, { source: 'pdf-digital', decimalSep: schema.decimalSep });
+            }
             const conf = processed.metadata.extraction?.confidence;
             if (conf) {
                 log('🎯', `Güven skoru: ${conf.score}/100${conf.needsReview ? ' — insan incelemesi önerilir' : ''}`, conf.needsReview ? 'warning' : 'success');
@@ -210,6 +224,114 @@ var SmartParser = (function () {
             };
         },
 
+        /**
+         * Tier 1 — AI Hakem (Faz 7): örneklenen satırları /api/verify-rows'a
+         * gönderip deterministik çıkarımı SADAKAT denetiminden geçirir.
+         * Her türlü hata/çevrimdışılıkta zarifçe {skipped} döner — Tier 0
+         * (kanıt kontrolü) her koşulda ayrıca çalışıyor.
+         */
+        async verifySample(processedData, context = {}) {
+            try {
+                if (typeof fetch !== 'function') return { skipped: true, reason: 'fetch yok' };
+                const pad = n => String(n).padStart(2, '0');
+                const sampled = Utils.sampleRows(processedData, 10)
+                    .filter(s => s.row && typeof s.row.rawText === 'string' && s.row.rawText.trim()
+                        && (s.row.timestamp instanceof Date || typeof s.row.timestamp === 'number'))
+                    .map(s => {
+                        const d = s.row.timestamp instanceof Date ? s.row.timestamp : new Date(s.row.timestamp);
+                        return {
+                            rowIndex: s.index,
+                            rawText: s.row.rawText,
+                            parsed: {
+                                date: `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`,
+                                time: `${pad(d.getHours())}:${pad(d.getMinutes())}` + (d.getSeconds() ? ':' + pad(d.getSeconds()) : ''),
+                                temperature: s.row.temperature
+                            }
+                        };
+                    });
+                if (sampled.length === 0) return { skipped: true, reason: 'ham satır kanıtı yok' };
+
+                const resp = await fetch('/api/verify-rows', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rows: sampled, context })
+                });
+                if (!resp.ok) return { skipped: true, reason: `sunucu ${resp.status}` };
+                const result = await resp.json();
+                if (!result.success) {
+                    return { skipped: true, reason: result.disabled ? 'devre dışı' : (result.error || 'başarısız') };
+                }
+                const mismatches = (result.verdicts || [])
+                    .filter(v => v && v.ok === false)
+                    .map(v => ({
+                        rowIndex: v.rowIndex,
+                        suggested: {
+                            date: v.correctedDate,
+                            time: v.correctedTime,
+                            temperature: v.correctedTemperature
+                        },
+                        note: v.note
+                    }));
+                return { checked: result.checkedCount || sampled.length, mismatches, cost: result.cost };
+            } catch (e) {
+                return { skipped: true, reason: e && e.message ? e.message : 'ağ hatası' };
+            }
+        },
+
+        /**
+         * Tier 1 sonucunu extraction bloğuna işler ve güven skorunu tazeler.
+         * Yalnızca şeması otomatik uygulanmış belgelerde çağrılır (insan
+         * onaylı sütun eşleştirmesi zaten HITL'den geçmiştir).
+         * NOT: verification.rowIndex postProcess-SONRASI dizi indeksidir;
+         * bu noktadan sonra processed.data yeniden sıralanmamalıdır.
+         */
+        async applyTier1(processed, log, context = {}) {
+            const ext = processed && processed.metadata && processed.metadata.extraction;
+            if (!ext) return;
+            const v = await this.verifySample(processed.data, context);
+            if (v.skipped) {
+                ext.verification = { skipped: true, reason: v.reason };
+            } else {
+                ext.verification = { checked: v.checked, mismatches: v.mismatches, cost: (v.cost && v.cost.total) || 0 };
+                processed.metadata.aiCost = (processed.metadata.aiCost || 0) + ((v.cost && v.cost.total) || 0);
+                if (v.mismatches.length > 0) {
+                    ext.forceReview = true;
+                    (ext.reviewReasons = ext.reviewReasons || []).push(
+                        `AI doğrulaması: örneklenen ${v.checked} satırın ${v.mismatches.length}'i ham satırla uyuşmuyor — önerilen düzeltmeler inceleme ekranında.`);
+                }
+            }
+            ext.confidence = DataParser.recomputeConfidence(processed.data, processed.metadata);
+            if (log) {
+                if (v.skipped) {
+                    log('🔍', `AI doğrulaması atlandı (${v.reason}) — deterministik kontroller geçerli.`, 'info');
+                } else {
+                    log('🔍', `AI doğrulaması: ${v.checked} örnek satır yeniden okundu, ${v.mismatches.length} uyuşmazlık ($${(((v.cost && v.cost.total) || 0)).toFixed(4)}).`,
+                        v.mismatches.length ? 'warning' : 'success');
+                }
+            }
+        },
+
+        /**
+         * Veri satırlarındaki gerçek ondalık ayracını tespit eder.
+         * Yalnızca °C/℉ birimli sayılar sayılır — tarih (02.07.2026) ve saat
+         * (00:04) ayraçları sayımı kirletemez. Belirgin bir çoğunluk yoksa
+         * (veya birimli ondalık hiç yoksa) null döner → şemaya dokunulmaz.
+         */
+        detectDecimalStyle(lines) {
+            let dot = 0, comma = 0;
+            const re = /\d([.,])\d{1,2}\s*(?:°\s*[CcFf]|℃|℉)/g;
+            for (const line of lines || []) {
+                let m;
+                re.lastIndex = 0;
+                while ((m = re.exec(line)) !== null) {
+                    if (m[1] === '.') dot++; else comma++;
+                }
+            }
+            if (dot > comma * 3 && dot >= 3) return '.';
+            if (comma > dot * 3 && comma >= 3) return ',';
+            return null;
+        },
+
         buildParser(schema) {
             const esc = c => ({ '.': '\\.', '-': '\\-', '/': '\\/', ',': ',', ' ': '\\s' }[c] || '\\.');
             // Şemada ayraç belirtilmişse (AI keşfi veya kullanıcı seçimi) ona sadık kal;
@@ -225,10 +347,15 @@ var SmartParser = (function () {
 
             // HATA ÖNLEME: Zaman ayracı hem nokta hem iki nokta olabilir (Genelde : tercih edilir).
             // Derece (°C) veya Yüzde (%) ile biten sayıları zaman olarak algılama.
-            const timeRe = new RegExp(`(?<![\\d])(\\d{1,2})[:.](\\d{2})(?![:.]\\d)(?![\\d])(?!\\s*[°CcFf℃℉%])`, 'i');
-            
-            // Sıcaklık için de benzer koruma
-            const unitRe = new RegExp(`(?<![\\d])([+-]?\\d{1,3}(?:${dec}\\d{1,2})?)\\s*(?:°\\s*[CcFf]|℃|℉)`, 'g');
+            // Saniyeli saatler (00:04:09) opsiyonel 3. grupla yakalanır; aralık
+            // doğrulaması (saat ≤ 23, dk/sn ≤ 59) eşleşme sonrası kodda yapılır —
+            // %60.72 gibi nem değerlerinin "60:72" diye saat sanılmasını engeller.
+            const timeRe = new RegExp(`(?<![\\d])(\\d{1,2})[:.](\\d{2})(?:[:.](\\d{2}))?(?![\\d])(?!\\s*[°CcFf℃℉%])`, 'gi');
+
+            // Sıcaklık için de benzer koruma. Look-behind'da '.', ',' ve ':' da
+            // yasak: şema virgül ondalıklıyken nokta ondalıklı veride (5.94 °C)
+            // kesir kısmının (94) bağımsız sayı olarak yakalanmasını engeller.
+            const unitRe = new RegExp(`(?<![\\d.,:])([+-]?\\d{1,3}(?:${dec}\\d{1,2})?)\\s*(?:°\\s*[CcFf]|℃|℉)`, 'g');
             // Ondalık kısmı opsiyonel — bazı satırlarda dolap sıcaklığı tam sayı yazılabiliyor (örn. "5", "19").
             // Look-behind/ahead'e ',', ':', '-' eklendi: tarih (23.03.2026), saat (00:31) ve ISO tarih (2026-03-23) yanlış yakalanmasın.
             const bareRe = new RegExp(`(?<![\\d.,:\\-])([+-]?\\d{1,3}(?:${dec}\\d{1,2})?)(?![\\d.,:\\-])(?!\\s*%)`, 'g');
@@ -252,8 +379,17 @@ var SmartParser = (function () {
                 const dateStr = `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
 
                 const afterDate = line.slice(dm.index + dm[0].length);
-                const tm = afterDate.match(timeRe);
-                const timeStr = tm ? (tm[1].padStart(2, '0') + ':' + tm[2]) : "00:00";
+                // Aralık dışı adaylar (60:72 gibi) atlanıp sıradaki aday denenir.
+                let timeStr = "00:00";
+                let tm;
+                timeRe.lastIndex = 0;
+                while ((tm = timeRe.exec(afterDate)) !== null) {
+                    const hh = parseInt(tm[1]), mm = parseInt(tm[2]), ss = tm[3] ? parseInt(tm[3]) : null;
+                    if (hh <= 23 && mm <= 59 && (ss === null || ss <= 59)) {
+                        timeStr = tm[1].padStart(2, '0') + ':' + tm[2] + (ss !== null ? ':' + tm[3] : '');
+                        break;
+                    }
+                }
 
                 const temps = [];
                 let match;
@@ -278,10 +414,12 @@ var SmartParser = (function () {
         async harvestWithDeterministicParser(file, schema) {
             const arrayBuffer = await file.arrayBuffer();
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-            const data = [];
-            const parseLine = this.buildParser(schema);
-            let lineCounter = 0;
 
+            // 1. geçiş: tüm satırları topla. Şemanın ondalık ayracı veriyle
+            // çelişiyorsa (örn. şablon hafızasından virgül şeması gelen ama
+            // nokta ondalıklı yazan cihaz) parse öncesi düzeltilir — aksi halde
+            // 5.94 gibi değerler sessizce bozuk okunurdu.
+            const allLines = [];
             for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
                 const page = await pdf.getPage(pageNum);
                 const textContent = await page.getTextContent();
@@ -293,17 +431,30 @@ var SmartParser = (function () {
 
                 items.sort((a, b) => b.y - a.y);
                 const lines = Utils.groupLines(items);
-
                 for (const lineItems of lines) {
-                    const lineStr = lineItems.map(i => i.str).join(" ");
-                    const parsed = parseLine(lineStr);
-                    if (parsed) {
-                        parsed.raw = lineStr;
-                        parsed.rowIndex = lineCounter;
-                        data.push(parsed);
-                    }
-                    lineCounter++;
+                    allLines.push(lineItems.map(i => i.str).join(" "));
                 }
+            }
+
+            let decimalCorrection = null;
+            const detectedDec = this.detectDecimalStyle(allLines);
+            if (detectedDec && schema.decimalSep && schema.decimalSep !== detectedDec) {
+                decimalCorrection = { from: schema.decimalSep, to: detectedDec };
+                schema = Object.assign({}, schema, { decimalSep: detectedDec });
+            }
+
+            // 2. geçiş: deterministik parse
+            const data = [];
+            const parseLine = this.buildParser(schema);
+            let lineCounter = 0;
+            for (const lineStr of allLines) {
+                const parsed = parseLine(lineStr);
+                if (parsed) {
+                    parsed.raw = lineStr;
+                    parsed.rowIndex = lineCounter;
+                    data.push(parsed);
+                }
+                lineCounter++;
             }
 
             // Tek tarih çözücü: şema yanlış dateOrder verdiyse normalize edilmiş
@@ -330,7 +481,9 @@ var SmartParser = (function () {
                 dateDetection,
                 totalCandidates: data.length,
                 tsFailures,
-                removedYearOutliers: finalData.length - cleanedData.length
+                removedYearOutliers: finalData.length - cleanedData.length,
+                decimalCorrection,
+                appliedSchema: schema
             };
         },
 
@@ -343,7 +496,10 @@ var SmartParser = (function () {
                 const fullText = textContent.items.map(i => i.str).join(' ');
 
                 if (fullText.includes('Tarih - Saat') || fullText.includes('Dolap °C')) {
-                    const schema = { dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: ',', tempColIndex: 0 };
+                    // Ondalık ayracı sabitlenmez: aynı Türkçe başlıkları kullanan
+                    // farklı cihazlar (örn. Azur) nokta ondalık yazabiliyor.
+                    const detectedDec = this.detectDecimalStyle([fullText]) || ',';
+                    const schema = { dateOrder: 'ymd', dateSep: '-', timeSep: ':', decimalSep: detectedDec, tempColIndex: 0 };
                     const res = await this.harvestWithDeterministicParser(file, schema);
                     if (res.data.length > 0) {
                         // Heuristik yol da ortak IR hattından geçer (sıralama + dedup +
@@ -354,7 +510,8 @@ var SmartParser = (function () {
                             removedYearOutliers: res.removedYearOutliers || 0,
                             extraction: {
                                 sourcePath: 'pdf-heuristic',
-                                schema: schema,
+                                schema: res.appliedSchema || schema,
+                                decimalCorrection: res.decimalCorrection || undefined,
                                 totalCandidates: res.totalCandidates,
                                 skippedRows: res.tsFailures,
                                 removedYearOutliers: res.removedYearOutliers || 0,
@@ -365,6 +522,8 @@ var SmartParser = (function () {
                             }
                         };
                         const processed = DataParser.postProcess(res.data, [], metadata, { resampling: false });
+                        // Tier 1: heuristik şema tanım gereği otomatiktir → AI hakem.
+                        await this.applyTier1(processed, log, { source: 'pdf-heuristic', decimalSep: schema.decimalSep });
                         const conf = processed.metadata.extraction?.confidence;
                         if (conf && log) {
                             log('🎯', `Güven skoru: ${conf.score}/100${conf.needsReview ? ' — insan incelemesi önerilir' : ''}`, conf.needsReview ? 'warning' : 'success');
@@ -643,6 +802,8 @@ var SmartParser = (function () {
                 }
             };
             const processed = DataParser.postProcess(cleanedData, [], metadata, { resampling: false });
+            // Tier 1: deneme şemaları otomatik seçilir → AI hakem.
+            await this.applyTier1(processed, log, { source: 'text' });
             const conf = processed.metadata.extraction?.confidence;
             if (conf) {
                 log('🎯', `Güven skoru: ${conf.score}/100${conf.needsReview ? ' — insan incelemesi önerilir' : ''}`, conf.needsReview ? 'warning' : 'success');
