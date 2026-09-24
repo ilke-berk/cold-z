@@ -47,6 +47,10 @@ jobs:
           cache: 'npm'
       - name: Install dependencies (native builds included)
         run: npm ci
+      # web/ git'te yok (derleme çıktısı); electron-builder doğrudan çağrıldığında
+      # "prebuild" koşmaz — arayüz derlenmezse paket boş ekranla açılır.
+      - name: Build UI (JSX derleme + vendor)
+        run: npm run build:ui
       - name: Package (unpacked dir)
         run: npx electron-builder --win --dir
         env:
