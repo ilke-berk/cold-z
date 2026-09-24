@@ -106,6 +106,10 @@
     const [openExc, setOpenExc] = useState(false);
     const reasons = S.reasons || [];
     const excursions = S.excursions || [];
+    // Kaynak belgeler (orijinal dosyalar) — "Belgede göster" ile sapmanın yeri açılır
+    const sources = (real && stored.sources) || [];
+    const [srcView, setSrcView] = useState(null);   // null | { exc, file }
+    const [srcWarn, setSrcWarn] = useState(null);
     const retroRows = (retro && retro.windows) || [];
     const reasonTone = r => /KRİTİK|RED|ANTI-FRAUD|limit dışı/i.test(r) ? '' : /REVİZE|VERİ|telafi/i.test(r) ? 'amber' : /korunmuştur|sorun teşkil etmedi/i.test(r) ? 'ok' : 'dim';
     const MoreBtn = ({ open, onClick, more, all }) => (
@@ -119,7 +123,25 @@
       setSaveState('saving');
       try {
         const j = await CCPipeline.save(stored.record);
-        if (j && j.success) { setSavedId(j.id); setSaveState('saved'); CCStore.patch({ savedId: j.id }); }
+        if (j && j.success) {
+          setSavedId(j.id); setSaveState('saved'); CCStore.patch({ savedId: j.id });
+          // BexFlow'dan gelen ısı kaydıysa analizi o eke bağla (BexFlow İadeleri ekranında görünür)
+          const bx = stored.bexflow;
+          if (bx && bx.attachmentIds) bx.attachmentIds.forEach(id => fetch(`/api/bexflow/attachments/${id}/link-analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ analysisId: j.id }) }).catch(() => {}));
+          // Elle yüklenen orijinal dosyaları analizle birlikte sakla (rapor sonradan da "Belgede göster" açabilsin)
+          const local = sources.filter(s => !s.bexflowAttachmentId && window.CCSources && CCSources.file(s));
+          if (local.length) {
+            try {
+              const fd = new FormData();
+              local.forEach(s => fd.append('files', CCSources.file(s), s.name));
+              const r = await fetch(`/api/analyses/${j.id}/sources`, { method: 'POST', body: fd }).then(x => x.json());
+              if (r && r.success) {
+                const byName = new Map(r.sources.map(x => [x.name, x.id]));
+                CCStore.patch({ sources: sources.map(s => byName.has(s.name) ? { ...s, analysisId: j.id, analysisSourceId: byName.get(s.name) } : s) });
+              } else setSrcWarn('Kaynak belgeler saklanamadı: ' + ((r && r.error) || 'bilinmeyen hata'));
+            } catch (e) { setSrcWarn('Kaynak belgeler saklanamadı: ' + e.message); }
+          }
+        }
         else setSaveState('error');
       } catch (e) { setSaveState('error'); }
     };
@@ -144,6 +166,26 @@
             <button className="cr-btn" onClick={() => window.print()}><Ic.report size={15} /> YAZDIR / PDF</button>
           </div>
         </div>
+
+        {sources.length > 0 && (
+          <div className="cr-pn" style={{ marginBottom: 16, padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="cr-pt" style={{ marginRight: 6 }}><Ic.eye size={15} style={{ color: 'var(--sig)' }} /> KAYNAK BELGELER</div>
+            {sources.map((s, i) => {
+              const ok = window.CCSources && CCSources.has(s);
+              return (
+                <button key={s.name} className="cr-btn cr-btn2" style={{ padding: '6px 11px', fontSize: 11.5, opacity: ok ? 1 : .55 }} disabled={!ok}
+                  title={ok ? 'Orijinal dosyayı aç' : 'Bu dosya saklanmamış (analiz kaydedilmeden oturum kapanmış)'}
+                  onClick={() => setSrcView({ exc: -1, file: i })}>
+                  {s.name}{s.bexflowAttachmentId ? ' · BexFlow' : ''}
+                </button>
+              );
+            })}
+            {excursions.length > 0 && <span style={{ fontSize: 11, color: 'var(--t3)' }}>Sapmaların belgedeki yeri için aşağıdaki tabloda "Belgede göster"e tıklayın.</span>}
+            {saveState !== 'saved' && sources.some(s => !s.bexflowAttachmentId && !s.analysisSourceId) && <span style={{ fontSize: 11, color: 'var(--amber)' }}>Elle yüklenen belgeler "Sisteme kaydet" ile saklanır.</span>}
+            {srcWarn && <span style={{ fontSize: 11, color: 'var(--bad)' }}>{srcWarn}</span>}
+          </div>
+        )}
+        {srcView && window.CRSourceViewer && <window.CRSourceViewer sources={sources} excursions={excursions} initialExc={srcView.exc} initialFile={srcView.file} onClose={() => setSrcView(null)} />}
 
         <div className="rp-g2">
           {/* Ürün karnesi */}
@@ -283,7 +325,7 @@
                 <span className="rp-cnt">{excursions.length} sapma · {low} düşük / {high} yüksek{lmax > 0 ? ' · en uzun ' + lmax.toLocaleString('tr-TR') + ' dk' : ''}</span>
               </div>
               <table className="cr-t">
-                <thead><tr>{['#', 'Başlangıç', 'Bitiş', 'Süre', 'Tür', 'Tepe'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{['#', 'Başlangıç', 'Bitiş', 'Süre', 'Tür', 'Tepe', ...(sources.length ? [''] : [])].map((h, k) => <th key={k}>{h}</th>)}</tr></thead>
                 <tbody>
                   {rows.map((x, i) => {
                     const out = x.peak > hi || x.peak < lo;
@@ -295,6 +337,7 @@
                         <td className="cr-m" style={{ fontWeight: 600 }}>{x.dur}</td>
                         <td style={{ color: 'var(--t2)' }}>{x.type === 'high' ? 'Yüksek sıcaklık' : 'Düşük sıcaklık'}{x.freeze ? ' · donma' : x.transient ? ' · anlık' : ''}{i === li && excursions.length > 1 ? ' · en uzun' : ''}</td>
                         <td className="cr-m" style={{ fontWeight: 700, color: out ? 'var(--bad)' : 'var(--ok)' }}>{Number(x.peak).toFixed(2)}°C</td>
+                        {sources.length > 0 && <td style={{ textAlign: 'right' }}><button className="cr-btn cr-btn2" style={{ padding: '4px 10px', fontSize: 11 }} disabled={!sources.some(s => window.CCSources && CCSources.has(s))} onClick={() => setSrcView({ exc: excursions.indexOf(x), file: 0 })}><Ic.eye size={12} /> Belgede göster</button></td>}
                       </tr>);
                   })}
                 </tbody>

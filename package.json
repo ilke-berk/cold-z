@@ -34,6 +34,11 @@
       "gemini-client.js",
       "pdf-helper.js",
       "date-format-detector.js",
+      "bexflow-client.js",
+      "bexflow-store.js",
+      "bexflow-service.js",
+      "bexflow-routes.js",
+      "analysis-sources.js",
       "app.html",
       "js/**/*",
       "ui/*.js",
@@ -53,16 +58,22 @@
       "**/*.node"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "assets/icon.png"
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false
+      "allowToChangeInstallationDirectory": false,
+      "artifactName": "Soguk-Zincir-Otomasyon-Kurulum-${version}.exe",
+      "shortcutName": "Soguk Zincir Otomasyon",
+      "createDesktopShortcut": true,
+      "runAfterFinish": true
     },
     "directories": {
       "output": "dist"
-    }
+    },
+    "afterPack": "scripts/after-pack.js"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",

@@ -7,7 +7,7 @@
  * oturum düşmüş demektir → giriş ekranına dönülür. */
 (function () {
   const { useState, useEffect } = React;
-  const { CCIcons: Ic, CRShell, CRDashboard, CRUpload, CRAnalysis, CRReport, CRSettings, CRTemplates, CRAudit, CRLogin } = window;
+  const { CCIcons: Ic, CRShell, CRDashboard, CRUpload, CRAnalysis, CRReport, CRSettings, CRTemplates, CRAudit, CRLogin, CRBexflow } = window;
 
   window.CCAuth = window.CCAuth || { user: null };
 
@@ -80,6 +80,7 @@
     else if (!auth) body = <CRLogin theme={theme} onAuth={(user) => { setUser(user); setPage('dashboard'); }} />;
     else if (page === 'dashboard') body = <CRDashboard theme={theme} onNav={setPage} />;
     else if (page === 'upload') body = <CRUpload theme={theme} onNav={setPage} />;
+    else if (page === 'bexflow') body = <CRBexflow theme={theme} onNav={setPage} />;
     else if (page === 'analysis') body = <CRAnalysis theme={theme} onNav={setPage} />;
     else if (page === 'report') body = <CRReport theme={theme} onNav={setPage} />;
     else if (page === 'templates') body = <CRTemplates theme={theme} onNav={setPage} />;

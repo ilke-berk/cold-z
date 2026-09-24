@@ -164,6 +164,11 @@ function initDB() {
                 });
             }
         });
+
+        // BexFlow entegrasyonu: işler, kalemler, notlar, ekler (bexflow-store.js)
+        require('./bexflow-store').initSchema(db);
+        // Analiz kaynak belgeleri (elle yüklenen orijinal dosyalar)
+        require('./analysis-sources').initSchema(db);
     });
 }
 

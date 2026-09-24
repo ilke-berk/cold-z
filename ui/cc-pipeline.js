@@ -108,6 +108,8 @@ window.CCPipeline = (function () {
     const exc = (a.excursions && a.excursions.excursions) || [];
     const excursions = exc.map(e => ({
       start: fmtDT(e.start), end: fmtDT(e.end), dur: fmtDur(e.duration), durMin: Number(e.duration) || 0,
+      // Mutlak zaman (ms): raporda "Belgede göster" kaynak belgede bu aralığı arar
+      t0: new Date(e.start).getTime(), t1: new Date(e.end).getTime(),
       type: e.type || 'high', peak: e.peakTemp != null ? e.peakTemp : (e.startTemp || 0),
       transient: !!e.transient, freeze: !!e.freeze, critical: !!e.critical, classification: e.classification || 'normal',
     }));

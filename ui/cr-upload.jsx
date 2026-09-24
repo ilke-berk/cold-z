@@ -188,6 +188,18 @@
       return () => { alive = false; };
     }, []);
 
+    // BexFlow İadeleri ekranından gelen ısı kayıtları: dosyalar eklenir, iade formu
+    // BexFlow verisiyle ön doldurulur; kayıt sonrası analiz BexFlow ekine bağlanır.
+    const bexRef = useRef(null);
+    useEffect(() => {
+      const h = window.CCBexHandoff;
+      if (!h) return;
+      window.CCBexHandoff = null;
+      bexRef.current = { taskId: h.taskId, attachmentIds: h.attachmentIds || [], sources: h.sources || [] };
+      setForm(s => ({ ...s, ...Object.fromEntries(Object.entries(h.form || {}).filter(([, v]) => v)) }));
+      addFiles(h.files || []);
+    }, []);
+
     // İnceleme açıldığında düşük güvenli satırların kaynak sayfasını render et
     // (dosya başına bir görüntü: ilk düşük güvenli satırın sayfası).
     useEffect(() => {
@@ -536,7 +548,12 @@
           return;
         }
         setReview(null);
-        CCStore.set({ scenario: out.scenario, record: serializeRecord(out.record), savedId: null });
+        // Kaynak belgeler: raporda "Belgede göster" için. File nesneleri oturum boyunca bellekte;
+        // BexFlow ekleri kimlikleriyle sunucudan her zaman yeniden açılabilir.
+        const bxSrc = (bexRef.current && bexRef.current.sources) || [];
+        if (window.CCSources) CCSources.register(files.map(f => ({ name: f.name, file: f.file })));
+        const sources = files.map(f => ({ name: f.name, bexflowAttachmentId: (bxSrc.find(s => s.name === f.name) || {}).id || null }));
+        CCStore.set({ scenario: out.scenario, record: serializeRecord(out.record), savedId: null, bexflow: bexRef.current, sources });
         setResult({ rowCount: out.rowCount, mkt: out.mkt, tor: out.tor, decision: out.decision.decision, label: (window.CCPipeline, out.scenario.label) });
         setRunning(false);
       } catch (err) {

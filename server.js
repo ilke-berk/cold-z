@@ -39,6 +39,21 @@ const envPath = isPackaged && userDataPath
     ? path.join(userDataPath, '.env')
     : path.join(__dirname, '.env');
 
+// Paketli ilk açılış: kurulum dosyasıyla gelen tohum ayarlar (resources/seed.env —
+// scripts/after-pack.js paketlerken geliştirici .env'sini kopyalar) userData/.env
+// yoksa oraya alınır. Böylece alıcı API anahtarı girmeden "tak-çalıştır" başlar;
+// sonradan Ayarlar ekranından değiştirilebilir. Tohum yoksa sessizce geçilir.
+if (isPackaged && userDataPath) {
+    try {
+        const fs = require('fs');
+        const seedPath = path.join(process.resourcesPath, 'seed.env');
+        if (!fs.existsSync(envPath) && fs.existsSync(seedPath)) {
+            fs.mkdirSync(userDataPath, { recursive: true });
+            fs.copyFileSync(seedPath, envPath);
+            console.log('[KURULUM] Tohum .env userData/.env olarak kopyalandı.');
+        }
+    } catch (e) { console.error('[UYARI] Tohum .env kopyalanamadı:', e.message); }
+}
 require('dotenv').config({ path: envPath });
 
 const { GeminiClient } = require('./gemini-client'); // @google/genai sarmalayıcısı (Faz 14)
@@ -47,6 +62,7 @@ const { splitPdf } = require('./pdf-helper');
 const db = require('./database');
 const DateFormatDetector = require('./date-format-detector');
 const FormatFingerprint = require('./js/format-fingerprint');
+const analysisSources = require('./analysis-sources');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -89,7 +105,7 @@ const CSP = [
     "form-action 'self'",
     "frame-ancestors 'none'",
 ].join('; ');
-const SENSITIVE_PATH = /(^|\/)(\.env(\..*)?|.*\.db(-journal|-wal|-shm)?|audit\.key|audit\.head\.json|package(-lock)?\.json|server\.js|database\.js|auth\.js|main\.js|pdf-helper\.js|vision-helper\.js)$/i;
+const SENSITIVE_PATH = /(^|\/)(\.env(\..*)?|.*\.db(-journal|-wal|-shm)?|audit\.key|audit\.head\.json|package(-lock)?\.json|server\.js|database\.js|auth\.js|main\.js|pdf-helper\.js|vision-helper\.js|bexflow-(client|store|service|routes)\.js|analysis-sources\.js)$/i;
 app.use((req, res, next) => {
     res.setHeader('Content-Security-Policy', CSP);
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -97,7 +113,7 @@ app.use((req, res, next) => {
     res.setHeader('Referrer-Policy', 'no-referrer');
     // Proje kökü statik sunulur; veritabanı, .env, imza anahtarı ve sunucu
     // kaynak dosyaları tarayıcıya asla verilmez.
-    if (!req.path.startsWith('/api/') && (SENSITIVE_PATH.test(req.path) || /^\/(node_modules|tests|scripts|\.git|\.github)(\/|$)/.test(req.path))) {
+    if (!req.path.startsWith('/api/') && (SENSITIVE_PATH.test(req.path) || /^\/(node_modules|tests|scripts|bexflow|sources|\.git|\.github)(\/|$)/.test(req.path))) {
         return res.status(404).end();
     }
     next();
@@ -1310,6 +1326,7 @@ app.delete('/api/analyses/:id', requireAdmin, async (req, res) => {
         if (isNaN(id)) return res.status(400).json({ success: false, error: 'Geçersiz id.' });
         const row = await db.deleteAnalysis(id);
         if (!row) return res.status(404).json({ success: false, error: 'Analiz bulunamadı.' });
+        await analysisSources.cleanupOrphans().catch(e => console.error('[HATA] Kaynak belge temizliği:', e.message));
         await db.addAuditEntry({
             type: 'kvkk', action: 'Analiz kaydı silindi',
             details: `#${id} · ${row.pharmacy_name || '—'} · ${row.drug_name || '—'} · ${row.decision || '—'} · kayıt ${row.created_at}`,
@@ -1327,11 +1344,12 @@ async function runRetentionPurge(trigger, who) {
     const days = retentionDays();
     if (!days) return { skipped: true, days: 0 };
     const r = await db.purgeOlderThan(days);
+    r.sourceFiles = await analysisSources.cleanupOrphans().catch(() => 0);
     if (r.analyses || r.readings || r.deviceSerials) {
         console.log(`[KVKK] Saklama temizliği (${trigger}): ${r.analyses} analiz, ${r.readings} ham seri, ${r.deviceSerials} cihaz kaydı silindi (> ${days} gün)`);
         await db.addAuditEntry({
             type: 'kvkk', action: 'Saklama süresi temizliği',
-            details: `${days} günden eski: ${r.analyses} analiz, ${r.readings} ham seri, ${r.deviceSerials} cihaz seri kaydı silindi (${trigger})`,
+            details: `${days} günden eski: ${r.analyses} analiz, ${r.readings} ham seri, ${r.deviceSerials} cihaz seri kaydı, ${r.sourceFiles || 0} kaynak belge silindi (${trigger})`,
             user: who || 'Sistem', tags: ['kvkk', 'purge']
         }).catch(() => {});
     }
@@ -1550,6 +1568,19 @@ app.delete('/api/templates/:id', requireAdmin, async (req, res) => {
         console.error('[HATA] Sablon silme hatasi:', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
+});
+
+// ─── Analiz kaynak belgeleri (/api/analyses/:id/sources) ─────
+// Elle yüklenen orijinal dosyalar kayıtla birlikte saklanır; rapor "Belgede göster" için.
+analysisSources.register(app, { db, actor });
+
+// ─── BexFlow entegrasyonu (/api/bexflow/*) ──────────────────
+// Alliance Healthcare BexFlow iade iş akışından salt-okunur veri çekme
+// (oturum Electron penceresinde kullanıcı tarafından açılır). Bkz. bexflow-service.js
+require('./bexflow-routes')(app, {
+    db,
+    actor,
+    getModel: () => (genAI ? gemModel({ model: MODEL_NAME, generationConfig: { temperature: 0, responseMimeType: 'application/json' } }) : null),
 });
 
 // ─── Genel hata yakalayıcı ──────────────────────────────────
